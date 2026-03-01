@@ -484,6 +484,8 @@ async def resend_otp(email: EmailStr):
     await send_otp_email(email, otp_code)
     
     return {"message": "New OTP sent to your email"}
+
+@api_router.post("/auth/login")
 async def login(data: UserLogin):
     user = await db.users.find_one({"email": data.email})
     if not user or not verify_password(data.password, user['password_hash']):
