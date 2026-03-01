@@ -57,7 +57,9 @@ const Dashboard = () => {
     <Layout>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8" data-testid="dashboard-page">
         <div className="mb-8">
-          <h1 className="font-heading text-4xl font-bold mb-2">Welcome back, {user?.name}</h1>
+          <h1 className="font-heading text-4xl font-bold mb-2">
+            Welcome back, {user?.username ? `@${user.username}` : user?.name}
+          </h1>
           <p className="text-muted-foreground">Monitor threats and manage your security scans</p>
         </div>
 
