@@ -175,7 +175,20 @@ const AdminDashboard = () => {
         </div>
 
         <div className="bg-card border border-border rounded-xl p-6">
-          <h2 className="font-heading text-2xl font-semibold mb-6">User Management</h2>
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="font-heading text-2xl font-semibold">User Management</h2>
+            <div className="relative w-64">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Search users..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 bg-black/50 border-border/50 focus:border-primary/50"
+                data-testid="user-search-input"
+              />
+            </div>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
