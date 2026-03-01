@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Shield, LogOut, User, LayoutDashboard, FileSearch, History, CreditCard, Settings } from 'lucide-react';
+import { Shield, LogOut, User, LayoutDashboard, FileSearch, History, CreditCard, Settings, Crown } from 'lucide-react';
 import { Button } from './ui/button';
 
 const Layout = ({ children }) => {
