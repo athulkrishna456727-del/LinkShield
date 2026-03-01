@@ -141,6 +141,15 @@ class UpdateUserRole(BaseModel):
 class UpgradePlan(BaseModel):
     plan: str
 
+class CreateOrderRequest(BaseModel):
+    plan: str
+
+class VerifyPaymentRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+    plan: str
+
 class Notification(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
