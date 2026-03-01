@@ -114,6 +114,9 @@ class ChangePassword(BaseModel):
     current_password: str
     new_password: str
 
+class ChangeUsername(BaseModel):
+    username: str
+
 class CreateAdmin(BaseModel):
     email: EmailStr
     name: str
