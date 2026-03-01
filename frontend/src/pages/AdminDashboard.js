@@ -225,6 +225,7 @@ const AdminDashboard = () => {
                                 setNewCredits(u.credits.toString());
                               }}
                               data-testid={`edit-credits-btn-${index}`}
+                              title="Edit Credits"
                             >
                               <Edit className="h-4 w-4" />
                             </Button>
@@ -261,6 +262,7 @@ const AdminDashboard = () => {
                                 setNewPlan(u.plan);
                               }}
                               data-testid={`edit-plan-btn-${index}`}
+                              title="Edit Plan"
                             >
                               <Crown className="h-4 w-4" />
                             </Button>
@@ -279,6 +281,7 @@ const AdminDashboard = () => {
                                   <SelectContent>
                                     <SelectItem value="free">Free</SelectItem>
                                     <SelectItem value="premium">Premium</SelectItem>
+                                    <SelectItem value="enterprise">Enterprise</SelectItem>
                                   </SelectContent>
                                 </Select>
                               </div>
@@ -288,6 +291,47 @@ const AdminDashboard = () => {
                             </div>
                           </DialogContent>
                         </Dialog>
+
+                        {user.role === 'owner' && u.role !== 'owner' && (
+                          <Dialog>
+                            <DialogTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setEditingUser(u);
+                                  setNewRole(u.role);
+                                }}
+                                data-testid={`edit-role-btn-${index}`}
+                                title="Edit Role"
+                              >
+                                <Users className="h-4 w-4" />
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent>
+                              <DialogHeader>
+                                <DialogTitle>Edit Role - {editingUser?.name}</DialogTitle>
+                              </DialogHeader>
+                              <div className="space-y-4 pt-4">
+                                <div>
+                                  <Label>Role</Label>
+                                  <Select value={newRole} onValueChange={setNewRole}>
+                                    <SelectTrigger className="mt-2" data-testid="role-select">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="user">User</SelectItem>
+                                      <SelectItem value="admin">Admin</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <Button onClick={handleUpdateRole} className="w-full" data-testid="save-role-btn">
+                                  Save Role
+                                </Button>
+                              </div>
+                            </DialogContent>
+                          </Dialog>
+                        )}
                       </div>
                     </td>
                   </tr>
