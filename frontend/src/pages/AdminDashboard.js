@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
-import { Users, FileSearch, TrendingUp, Crown, Edit, Trash2 } from 'lucide-react';
+import { Users, FileSearch, TrendingUp, Crown, Edit, Search } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -18,12 +18,14 @@ const AdminDashboard = () => {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [editingUser, setEditingUser] = useState(null);
   const [newCredits, setNewCredits] = useState('');
   const [newPlan, setNewPlan] = useState('');
+  const [newRole, setNewRole] = useState('');
 
   useEffect(() => {
-    if (user?.role !== 'admin') {
+    if (user?.role !== 'admin' && user?.role !== 'owner') {
       navigate('/dashboard');
       return;
     }
@@ -45,6 +47,7 @@ const AdminDashboard = () => {
   const fetchUsers = async () => {
     try {
       const response = await axios.get(`${API_URL}/admin/users`, {
+        params: searchTerm ? { search: searchTerm } : {},
         headers: { Authorization: `Bearer ${token}` }
       });
       setUsers(response.data);
@@ -52,6 +55,13 @@ const AdminDashboard = () => {
       console.error('Failed to fetch users', error);
     }
   };
+
+  useEffect(() => {
+    const delayDebounceFn = setTimeout(() => {
+      fetchUsers();
+    }, 500);
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchTerm]);
 
   const handleUpdateCredits = async () => {
     if (!editingUser || !newCredits) return;
@@ -89,7 +99,25 @@ const AdminDashboard = () => {
     }
   };
 
-  if (user?.role !== 'admin') {
+  const handleUpdateRole = async () => {
+    if (!editingUser || !newRole) return;
+
+    try {
+      await axios.put(
+        `${API_URL}/admin/users/${editingUser.id}/role`,
+        { role: newRole },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success('Role updated successfully');
+      fetchUsers();
+      setEditingUser(null);
+      setNewRole('');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update role');
+    }
+  };
+
+  if (user?.role !== 'admin' && user?.role !== 'owner') {
     return null;
   }
 
