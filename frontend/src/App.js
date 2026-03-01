@@ -14,6 +14,8 @@ import History from './pages/History';
 import Profile from './pages/Profile';
 import Plans from './pages/Plans';
 import AdminDashboard from './pages/AdminDashboard';
+import AccountSettings from './pages/AccountSettings';
+import OwnerControls from './pages/OwnerControls';
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
