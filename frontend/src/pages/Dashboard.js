@@ -150,7 +150,7 @@ const Dashboard = () => {
                       <span className="font-mono text-sm text-muted-foreground">{scan.risk_score}/100</span>
                     </div>
                   </div>
-                ))}
+                ))
               )}
             </div>
           </div>
