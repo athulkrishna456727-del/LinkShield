@@ -32,6 +32,51 @@ security = HTTPBearer()
 JWT_SECRET = os.environ.get('JWT_SECRET', 'link-shield-secret-key-change-in-production')
 JWT_ALGORITHM = 'HS256'
 
+RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', 'rzp_test_demo_key')
+RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', 'rzp_test_demo_secret')
+razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+PLAN_PRICES = {
+    'free': 0,
+    'premium': 499,
+    'enterprise': 2499
+}
+
+PLAN_FEATURES = {
+    'free': {
+        'credits_per_month': 50,
+        'max_file_size': 10 * 1024 * 1024,
+        'features': ['50 credits per month', 'Basic scans', 'Limited file size (10MB)', 'Basic reports']
+    },
+    'premium': {
+        'credits_per_month': 500,
+        'max_file_size': 100 * 1024 * 1024,
+        'features': [
+            '500 credits per month',
+            'Advanced threat analysis',
+            'IOC extraction',
+            'Priority scan queue',
+            'Full scan history',
+            'PDF reports',
+            'Alerts and monitoring',
+            'Basic API access'
+        ]
+    },
+    'enterprise': {
+        'credits_per_month': 999999,
+        'max_file_size': 500 * 1024 * 1024,
+        'features': [
+            'Unlimited scans (fair usage)',
+            'Large file uploads (500MB)',
+            'Team workspace',
+            'Advanced analytics',
+            'Custom reports',
+            'High API limits',
+            'Dedicated priority queue'
+        ]
+    }
+}
+
 SUSPICIOUS_KEYWORDS = ['phishing', 'malware', 'virus', 'hack', 'exploit', 'trojan', 'ransomware', 'suspicious', 'fake', 'scam']
 SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.cmd', '.scr', '.vbs', '.js', '.jar', '.apk']
 
