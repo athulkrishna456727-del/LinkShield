@@ -1194,7 +1194,16 @@ async def update_user_role(user_id: str, data: UpdateUserRole, current_user: Use
     if data.role == 'admin' and current_user.role != 'owner':
         raise HTTPException(status_code=403, detail="Only owner can create admins")
     
-    result = await db.users.update_one({"id": user_id}, {"$set": {"role": data.role}})
+    old_role = target_user['role']
+    await db.users.update_one({"id": user_id}, {"$set": {"role": data.role}})
+    
+    await create_audit_log(
+        action_type="role_changed",
+        performed_by=current_user.id,
+        target_user=user_id,
+        details=f"Role changed from {old_role} to {data.role}"
+    )
+    
     return {"message": "Role updated"}
 
 @api_router.get("/admin/stats", dependencies=[Depends(get_admin_user)])
