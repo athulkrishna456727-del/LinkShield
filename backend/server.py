@@ -780,12 +780,178 @@ async def get_plans():
     return plans
 
 @api_router.get("/admin/users", dependencies=[Depends(get_admin_user)])
-async def get_all_users(search: Optional[str] = None):
+async def get_all_users(search: Optional[str] = None, status: Optional[str] = None):
     query = {}
     if search:
-        query = {"$or": [{"email": {"$regex": search, "$options": "i"}}, {"name": {"$regex": search, "$options": "i"}}]}
+        query["$or"] = [
+            {"email": {"$regex": search, "$options": "i"}},
+            {"name": {"$regex": search, "$options": "i"}}
+        ]
+    if status:
+        query["status"] = status
     users = await db.users.find(query, {"_id": 0, "password_hash": 0}).to_list(1000)
     return users
+
+@api_router.get("/admin/users/{user_id}", dependencies=[Depends(get_admin_user)])
+async def get_user_details(user_id: str):
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    scan_count = await db.scans.count_documents({"user_id": user_id})
+    credit_history = await db.credit_history.find({"user_id": user_id}, {"_id": 0}).sort("timestamp", -1).limit(10).to_list(10)
+    
+    return {
+        "user": user,
+        "scan_count": scan_count,
+        "recent_credit_history": credit_history
+    }
+
+@api_router.put("/admin/users/{user_id}/status")
+async def update_user_status(user_id: str, data: UpdateUserStatus, current_user: User = Depends(get_admin_user)):
+    target_user = await db.users.find_one({"id": user_id})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if target_user['role'] == 'owner':
+        raise HTTPException(status_code=403, detail="Cannot modify owner status")
+    
+    result = await db.users.update_one({"id": user_id}, {"$set": {"status": data.status}})
+    
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": current_user.id,
+        "action": "user_status_update",
+        "details": f"Updated {target_user['email']} status to {data.status}",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"message": f"User status updated to {data.status}"}
+
+@api_router.post("/admin/users/{user_id}/add-credits")
+async def add_credits_to_user(user_id: str, data: AddCredits, current_user: User = Depends(get_admin_user)):
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    await db.users.update_one({"id": user_id}, {"$inc": {"credits": data.amount}})
+    
+    await db.credit_history.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "amount": data.amount,
+        "reason": f"Admin credit addition: {data.reason}",
+        "admin_id": current_user.id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    await create_notification(user_id, "credits_added", f"{data.amount} credits added to your account")
+    
+    return {"message": "Credits added successfully", "new_balance": user['credits'] + data.amount}
+
+@api_router.post("/admin/users/{user_id}/deduct-credits")
+async def deduct_credits_from_user(user_id: str, data: DeductCredits, current_user: User = Depends(get_admin_user)):
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user['credits'] < data.amount:
+        raise HTTPException(status_code=400, detail="Insufficient credits to deduct")
+    
+    await db.users.update_one({"id": user_id}, {"$inc": {"credits": -data.amount}})
+    
+    await db.credit_history.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "amount": -data.amount,
+        "reason": f"Admin credit deduction: {data.reason}",
+        "admin_id": current_user.id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"message": "Credits deducted successfully", "new_balance": user['credits'] - data.amount}
+
+@api_router.post("/admin/users/{user_id}/reset-credits")
+async def reset_user_credits(user_id: str, current_user: User = Depends(get_admin_user)):
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    plan_credits = PLAN_FEATURES[user['plan']]['credits_per_month']
+    
+    await db.users.update_one({"id": user_id}, {"$set": {"credits": plan_credits}})
+    
+    await db.credit_history.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "amount": plan_credits,
+        "reason": "Admin credit reset",
+        "admin_id": current_user.id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"message": "Credits reset successfully", "new_balance": plan_credits}
+
+@api_router.get("/admin/scans")
+async def get_all_scans(
+    status: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    limit: int = 100,
+    current_user: User = Depends(get_admin_user)
+):
+    query = {}
+    if status:
+        query["status"] = status
+    if risk_level:
+        query["risk_level"] = risk_level
+    
+    scans = await db.scans.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    for scan in scans:
+        user = await db.users.find_one({"id": scan['user_id']}, {"_id": 0, "email": 1, "name": 1})
+        if user:
+            scan['user_info'] = user
+    
+    return scans
+
+@api_router.get("/admin/scans/{scan_id}")
+async def get_scan_admin(scan_id: str, current_user: User = Depends(get_admin_user)):
+    scan = await db.scans.find_one({"id": scan_id}, {"_id": 0})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    
+    user = await db.users.find_one({"id": scan['user_id']}, {"_id": 0, "email": 1, "name": 1, "role": 1})
+    scan['user_info'] = user
+    
+    return scan
+
+@api_router.get("/admin/analytics/detailed")
+async def get_detailed_analytics(current_user: User = Depends(get_admin_user)):
+    total_users = await db.users.count_documents({})
+    active_users = await db.users.count_documents({"status": {"$ne": "disabled"}})
+    total_scans = await db.scans.count_documents({})
+    
+    scans_today = await db.scans.count_documents({
+        "created_at": {"$gte": datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat()}
+    })
+    
+    revenue_pipeline = [
+        {"$match": {"status": "completed"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]
+    revenue_result = await db.transactions.aggregate(revenue_pipeline).to_list(1)
+    total_revenue = revenue_result[0]['total'] if revenue_result else 0
+    
+    return {
+        "total_users": total_users,
+        "active_users": active_users,
+        "total_scans": total_scans,
+        "scans_today": scans_today,
+        "total_revenue": total_revenue,
+        "premium_users": await db.users.count_documents({"plan": "premium"}),
+        "enterprise_users": await db.users.count_documents({"plan": "enterprise"}),
+        "free_users": await db.users.count_documents({"plan": "free"})
+    }
 
 @api_router.put("/admin/users/{user_id}/credits", dependencies=[Depends(get_admin_user)])
 async def update_user_credits(user_id: str, data: UpdateUserCredits):
