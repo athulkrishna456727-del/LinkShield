@@ -561,11 +561,7 @@ async def upgrade_plan(data: UpgradePlan, user: User = Depends(get_current_user)
     if user.plan == data.plan:
         raise HTTPException(status_code=400, detail="Already on this plan")
     
-    amount = 0
-    if data.plan == 'premium':
-        amount = 29
-    elif data.plan == 'enterprise':
-        amount = 99
+    amount = PLAN_PRICES.get(data.plan, 0)
     
     transaction_id = str(uuid.uuid4())
     await db.transactions.insert_one({
@@ -574,7 +570,8 @@ async def upgrade_plan(data: UpgradePlan, user: User = Depends(get_current_user)
         "plan": data.plan,
         "amount": amount,
         "status": "pending",
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "payment_id": None,
+        "created_at": datetime.now(timezone.utc).isoformat()
     })
     
     return {
@@ -583,6 +580,179 @@ async def upgrade_plan(data: UpgradePlan, user: User = Depends(get_current_user)
         "amount": amount,
         "note": "Payment integration not yet implemented. Contact admin to complete upgrade."
     }
+
+@api_router.post("/billing/create-order")
+async def create_razorpay_order(data: CreateOrderRequest, user: User = Depends(get_current_user)):
+    if data.plan not in ['premium', 'enterprise']:
+        raise HTTPException(status_code=400, detail="Invalid plan for payment")
+    
+    if user.plan == data.plan:
+        raise HTTPException(status_code=400, detail="Already on this plan")
+    
+    amount = PLAN_PRICES[data.plan]
+    
+    try:
+        order_data = {
+            'amount': amount * 100,
+            'currency': 'INR',
+            'receipt': f'order_{user.id}_{int(datetime.now(timezone.utc).timestamp())}',
+            'notes': {
+                'user_id': user.id,
+                'plan': data.plan,
+                'email': user.email
+            }
+        }
+        
+        order = razorpay_client.order.create(data=order_data)
+        
+        transaction_id = str(uuid.uuid4())
+        await db.transactions.insert_one({
+            "id": transaction_id,
+            "user_id": user.id,
+            "plan": data.plan,
+            "amount": amount,
+            "status": "pending",
+            "order_id": order['id'],
+            "payment_id": None,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        return {
+            "order_id": order['id'],
+            "amount": amount,
+            "currency": "INR",
+            "key_id": RAZORPAY_KEY_ID,
+            "transaction_id": transaction_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+
+@api_router.post("/billing/verify-payment")
+async def verify_payment(data: VerifyPaymentRequest, user: User = Depends(get_current_user)):
+    try:
+        signature_string = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
+        generated_signature = hmac.new(
+            RAZORPAY_KEY_SECRET.encode(),
+            signature_string.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if generated_signature != data.razorpay_signature:
+            raise HTTPException(status_code=400, detail="Invalid payment signature")
+        
+        transaction = await db.transactions.find_one({
+            "user_id": user.id,
+            "order_id": data.razorpay_order_id
+        })
+        
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        await db.transactions.update_one(
+            {"id": transaction['id']},
+            {
+                "$set": {
+                    "status": "completed",
+                    "payment_id": data.razorpay_payment_id,
+                    "completed_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        )
+        
+        new_credits = PLAN_FEATURES[data.plan]['credits_per_month']
+        await db.users.update_one(
+            {"id": user.id},
+            {
+                "$set": {
+                    "plan": data.plan,
+                    "credits": new_credits
+                }
+            }
+        )
+        
+        await db.credit_history.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "amount": new_credits,
+            "reason": f"Plan upgraded to {data.plan}",
+            "transaction_id": transaction['id'],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        
+        await create_notification(
+            user.id,
+            "payment_success",
+            f"Payment successful! Your plan has been upgraded to {data.plan.upper()}"
+        )
+        
+        return {
+            "success": True,
+            "message": "Payment verified and plan upgraded successfully",
+            "plan": data.plan,
+            "credits": new_credits
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Payment verification failed: {str(e)}")
+
+@api_router.post("/billing/webhook")
+async def razorpay_webhook(request: Request):
+    try:
+        webhook_signature = request.headers.get('X-Razorpay-Signature')
+        webhook_body = await request.body()
+        
+        razorpay_client.utility.verify_webhook_signature(
+            webhook_body.decode(),
+            webhook_signature,
+            RAZORPAY_KEY_SECRET
+        )
+        
+        payload = await request.json()
+        event = payload.get('event')
+        
+        if event == 'payment.captured':
+            payment_entity = payload['payload']['payment']['entity']
+            order_id = payment_entity['order_id']
+            payment_id = payment_entity['id']
+            
+            transaction = await db.transactions.find_one({"order_id": order_id})
+            
+            if transaction and transaction['status'] == 'pending':
+                await db.transactions.update_one(
+                    {"id": transaction['id']},
+                    {
+                        "$set": {
+                            "status": "completed",
+                            "payment_id": payment_id,
+                            "completed_at": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+                )
+                
+                plan = transaction['plan']
+                new_credits = PLAN_FEATURES[plan]['credits_per_month']
+                
+                await db.users.update_one(
+                    {"id": transaction['user_id']},
+                    {
+                        "$set": {
+                            "plan": plan,
+                            "credits": new_credits
+                        }
+                    }
+                )
+                
+                await create_notification(
+                    transaction['user_id'],
+                    "payment_success",
+                    f"Payment successful! Your plan has been upgraded to {plan.upper()}"
+                )
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        return {"status": "error", "message": str(e)}
 
 @api_router.get("/billing/history")
 async def get_billing_history(user: User = Depends(get_current_user)):
