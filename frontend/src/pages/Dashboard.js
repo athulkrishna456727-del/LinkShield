@@ -124,28 +124,33 @@ const Dashboard = () => {
                   </Button>
                 </div>
               ) : (
-                recentScans.map((scan, index) => (
+                {recentScans.map((scan, index) => (
                   <div
                     key={scan.id}
                     className="flex items-center justify-between p-4 bg-accent/30 rounded-lg border border-border/50 hover:border-primary/50 transition-all cursor-pointer"
                     onClick={() => navigate(`/scan/${scan.id}`)}
                     data-testid={`recent-scan-${index}`}
                   >
-                    <div className="flex items-center space-x-4 flex-1">
+                    <div className="flex items-center space-x-4 flex-1 min-w-0">
                       {getRiskIcon(scan.risk_level)}
-                      <div className="flex-1">
-                        <p className="font-mono text-sm font-medium truncate">{scan.target}</p>
+                      <div className="flex-1 min-w-0">
+                        <p 
+                          className="font-mono text-sm font-medium truncate" 
+                          title={scan.target}
+                        >
+                          {scan.target}
+                        </p>
                         <p className="text-xs text-muted-foreground">{new Date(scan.created_at).toLocaleString()}</p>
                       </div>
                     </div>
-                    <div className="flex items-center space-x-4">
+                    <div className="flex items-center space-x-4 flex-shrink-0">
                       <span className={`px-2.5 py-0.5 rounded-full text-xs font-mono uppercase tracking-wider border ${getRiskBadgeClass(scan.risk_level)}`}>
                         {scan.risk_level}
                       </span>
                       <span className="font-mono text-sm text-muted-foreground">{scan.risk_score}/100</span>
                     </div>
                   </div>
-                ))
+                ))}
               )}
             </div>
           </div>
