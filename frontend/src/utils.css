@@ -1,0 +1,52 @@
+/* Text Overflow Utilities */
+.truncate-with-tooltip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.break-words {
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Scan target truncation */
+.scan-target {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-target:hover {
+  overflow: visible;
+  white-space: normal;
+  word-break: break-all;
+}
+
+/* Table cell truncation */
+.table-cell-truncate {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Responsive text container */
+.text-container {
+  min-width: 0;
+  flex: 1;
+}
+
+/* Multi-line truncation (2 lines) */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Tooltip on hover */
+[title] {
+  cursor: help;
+}
