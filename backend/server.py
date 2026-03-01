@@ -370,8 +370,6 @@ async def signup(data: UserSignup):
         raise HTTPException(status_code=400, detail="Username already taken")
     
     user_id = str(uuid.uuid4())
-    otp_code = generate_otp()
-    otp_expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
     
     user_doc = {
         "id": user_id,
@@ -382,18 +380,12 @@ async def signup(data: UserSignup):
         "role": "user",
         "plan": "free",
         "credits": 50,
-        "email_verified": False,
-        "otp_code": otp_code,
-        "otp_expiry": otp_expiry,
-        "otp_attempts": 0,
+        "email_verified": True,
         "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     
     await db.users.insert_one(user_doc)
-    
-    # Send OTP email
-    await send_otp_email(data.email, otp_code)
     
     await create_audit_log(
         action_type="user_signup",
@@ -401,11 +393,10 @@ async def signup(data: UserSignup):
         details=f"New user signup: {data.email} (@{data.username})"
     )
     
-    return {
-        "message": "Signup successful. Please verify your email with the OTP sent.",
-        "email": data.email,
-        "requires_verification": True
-    }
+    token = create_token(user_id, data.email, "user")
+    user_response = {k: v for k, v in user_doc.items() if k not in ["password_hash", "_id", "otp_code"]}
+    
+    return {"token": token, "user": user_response}
 
 @api_router.post("/auth/verify-otp")
 async def verify_otp(data: VerifyOTP):
