@@ -756,18 +756,18 @@ async def razorpay_webhook(request: Request):
 
 @api_router.get("/billing/history")
 async def get_billing_history(user: User = Depends(get_current_user)):
-    history = await db.transactions.find({\"user_id\": user.id}, {\"_id\": 0}).sort(\"created_at\", -1).to_list(50)
+    history = await db.transactions.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).to_list(50)
     return history
 
-@api_router.get(\"/billing/plans\")
+@api_router.get("/billing/plans")
 async def get_plans():
     plans = []
     for plan_name, price in PLAN_PRICES.items():
         plans.append({
-            \"name\": plan_name,
-            \"price\": price,
-            \"features\": PLAN_FEATURES[plan_name]['features'],
-            \"credits_per_month\": PLAN_FEATURES[plan_name]['credits_per_month']
+            "name": plan_name,
+            "price": price,
+            "features": PLAN_FEATURES[plan_name]['features'],
+            "credits_per_month": PLAN_FEATURES[plan_name]['credits_per_month']
         })
     return plans
 
