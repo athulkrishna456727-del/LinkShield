@@ -534,7 +534,36 @@ async def change_password(data: ChangePassword, user: User = Depends(get_current
     
     new_hash = hash_password(data.new_password)
     await db.users.update_one({"id": user.id}, {"$set": {"password_hash": new_hash}})
+    
+    await create_audit_log(
+        action_type="password_changed",
+        performed_by=user.id,
+        details="User changed password"
+    )
+    
     return {"message": "Password updated successfully"}
+
+@api_router.put("/account/username")
+async def change_username(data: ChangeUsername, user: User = Depends(get_current_user)):
+    if not validate_username(data.username):
+        raise HTTPException(
+            status_code=400,
+            detail="Username must be 3-20 characters and contain only letters, numbers, and underscores"
+        )
+    
+    existing = await db.users.find_one({"username": data.username})
+    if existing and existing['id'] != user.id:
+        raise HTTPException(status_code=400, detail="Username already taken")
+    
+    await db.users.update_one({"id": user.id}, {"$set": {"username": data.username}})
+    
+    await create_audit_log(
+        action_type="username_changed",
+        performed_by=user.id,
+        details=f"Username changed to @{data.username}"
+    )
+    
+    return {"message": "Username updated successfully"}
 
 @api_router.post("/scan/url")
 async def scan_url(data: URLScanRequest, user: User = Depends(get_current_user)):
