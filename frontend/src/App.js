@@ -61,6 +61,8 @@ function App() {
           <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
           <Route path="/plans" element={<PrivateRoute><Plans /></PrivateRoute>} />
           <Route path="/admin" element={<PrivateRoute><AdminDashboard /></PrivateRoute>} />
+          <Route path="/settings" element={<PrivateRoute><AccountSettings /></PrivateRoute>} />
+          <Route path="/owner" element={<PrivateRoute><OwnerControls /></PrivateRoute>} />
         </Routes>
         <Toaster position="top-right" />
       </BrowserRouter>
