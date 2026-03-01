@@ -98,10 +98,12 @@ class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
     email: str
+    username: str
     name: str
     role: str = "user"
     plan: str = "free"
     credits: int = 50
+    email_verified: bool = False
     created_at: str
 
 class ChangeEmail(BaseModel):
