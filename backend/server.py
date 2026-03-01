@@ -135,21 +135,16 @@ class UpdateUserCredits(BaseModel):
 class UpdateUserPlan(BaseModel):
     plan: str
 
-class UpdateUserStatus(BaseModel):
-    status: str  # active, suspended, disabled
+class UpdateUserRole(BaseModel):
+    role: str
 
-class ResetUserPassword(BaseModel):
-    new_password: str
+class AddCredits(BaseModel):
+    amount: int
+    reason: str
 
-class SystemSettings(BaseModel):
-    maintenance_mode: bool = False
-    scan_url_cost_free: int = 5
-    scan_url_cost_premium: int = 3
-    scan_file_cost_free: int = 10
-    scan_file_cost_premium: int = 6
-    max_file_size_free: int = 10485760
-    max_file_size_premium: int = 104857600
-    max_file_size_enterprise: int = 524288000
+class DeductCredits(BaseModel):
+    amount: int
+    reason: str
 
 class UpgradePlan(BaseModel):
     plan: str
