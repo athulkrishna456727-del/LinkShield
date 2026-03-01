@@ -124,7 +124,7 @@ const Dashboard = () => {
                   </Button>
                 </div>
               ) : (
-                {recentScans.map((scan, index) => (
+                recentScans.map((scan, index) => (
                   <div
                     key={scan.id}
                     className="flex items-center justify-between p-4 bg-accent/30 rounded-lg border border-border/50 hover:border-primary/50 transition-all cursor-pointer"
