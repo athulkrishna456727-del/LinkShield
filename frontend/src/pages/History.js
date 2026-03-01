@@ -102,10 +102,10 @@ const History = () => {
                   onClick={() => navigate(`/scan/${scan.id}`)}
                   data-testid={`scan-item-${index}`}
                 >
-                  <div className="flex items-center space-x-4 flex-1">
+                  <div className="flex items-center space-x-4 flex-1 min-w-0">
                     {getRiskIcon(scan.risk_level)}
                     <div className="flex-1 min-w-0">
-                      <p className="font-mono text-sm font-medium truncate" data-testid={`scan-target-${index}`}>
+                      <p className="font-mono text-sm font-medium truncate" title={scan.target} data-testid={`scan-target-${index}`}>
                         {scan.target}
                       </p>
                       <div className="flex items-center space-x-4 text-xs text-muted-foreground mt-1">
@@ -117,7 +117,7 @@ const History = () => {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center space-x-4">
+                  <div className="flex items-center space-x-4 flex-shrink-0">
                     <span
                       className={`px-3 py-1 rounded-full text-xs font-mono uppercase tracking-wider border ${getRiskBadgeClass(
                         scan.risk_level
