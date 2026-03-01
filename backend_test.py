@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 class LinkShieldTester:
-    def __init__(self, base_url="https://shield-scan-3.preview.emergentagent.com/api"):
+    def __init__(self, base_url="https://linkshield-demo.preview.emergentagent.com/api"):
         self.base_url = base_url
         self.token = None
         self.admin_token = None
