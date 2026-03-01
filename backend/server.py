@@ -22,10 +22,6 @@ def validate_username(username: str) -> bool:
     """Validate username format: letters, numbers, underscore only"""
     return bool(re.match(r'^[a-zA-Z0-9_]{3,20}$', username))
 
-def generate_otp() -> str:
-    """Generate 6-digit OTP"""
-    return str(random.randint(100000, 999999))
-
 async def create_audit_log(action_type: str, performed_by: str, target_user: str = None, details: str = ""):
     """Create comprehensive audit log"""
     log_entry = {
@@ -37,16 +33,6 @@ async def create_audit_log(action_type: str, performed_by: str, target_user: str
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
     await db.audit_logs.insert_one(log_entry)
-
-async def send_otp_email(email: str, otp: str):
-    """
-    Send OTP via email - Placeholder for email service integration
-    In production, integrate with SendGrid, AWS SES, or similar
-    """
-    # For now, log OTP (in production, send actual email)
-    logger.info(f"OTP for {email}: {otp}")
-    print(f"📧 OTP Email - To: {email}, Code: {otp}")
-    return True
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -115,10 +101,6 @@ class UserSignup(BaseModel):
     password: str
     name: str
     username: str
-
-class VerifyOTP(BaseModel):
-    email: EmailStr
-    otp_code: str
 
 class UserLogin(BaseModel):
     email: EmailStr
