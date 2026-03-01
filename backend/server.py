@@ -353,28 +353,59 @@ def analyze_file(filename: str, content: bytes) -> dict:
 
 @api_router.post("/auth/signup")
 async def signup(data: UserSignup):
-    existing = await db.users.find_one({"email": data.email})
-    if existing:
+    # Validate username
+    if not validate_username(data.username):
+        raise HTTPException(
+            status_code=400,
+            detail="Username must be 3-20 characters and contain only letters, numbers, and underscores"
+        )
+    
+    # Check for existing email or username
+    existing_email = await db.users.find_one({"email": data.email})
+    if existing_email:
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    existing_username = await db.users.find_one({"username": data.username})
+    if existing_username:
+        raise HTTPException(status_code=400, detail="Username already taken")
+    
     user_id = str(uuid.uuid4())
+    otp_code = generate_otp()
+    otp_expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    
     user_doc = {
         "id": user_id,
         "email": data.email,
+        "username": data.username,
         "password_hash": hash_password(data.password),
         "name": data.name,
         "role": "user",
         "plan": "free",
         "credits": 50,
+        "email_verified": False,
+        "otp_code": otp_code,
+        "otp_expiry": otp_expiry,
+        "otp_attempts": 0,
+        "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     
     await db.users.insert_one(user_doc)
     
-    token = create_token(user_id, data.email, "user")
-    user_response = {k: v for k, v in user_doc.items() if k != "password_hash" and k != "_id"}
+    # Send OTP email
+    await send_otp_email(data.email, otp_code)
     
-    return {"token": token, "user": user_response}
+    await create_audit_log(
+        action_type="user_signup",
+        performed_by=user_id,
+        details=f"New user signup: {data.email} (@{data.username})"
+    )
+    
+    return {
+        "message": "Signup successful. Please verify your email with the OTP sent.",
+        "email": data.email,
+        "requires_verification": True
+    }
 
 @api_router.post("/auth/login")
 async def login(data: UserLogin):
