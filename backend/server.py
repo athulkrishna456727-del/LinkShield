@@ -1417,6 +1417,98 @@ async def get_all_activity_logs(
     
     return logs
 
+@api_router.post("/owner/promote-to-owner/{user_id}")
+async def promote_to_owner(user_id: str, current_user: User = Depends(get_owner_user)):
+    target_user = await db.users.find_one({"id": user_id})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if target_user['role'] == 'owner':
+        raise HTTPException(status_code=400, detail="User is already an owner")
+    
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"role": "owner", "plan": "enterprise", "credits": 999999}}
+    )
+    
+    await create_audit_log(
+        action_type="owner_promoted",
+        performed_by=current_user.id,
+        target_user=user_id,
+        details=f"Promoted {target_user['email']} to owner"
+    )
+    
+    await create_notification(user_id, "role_change", "You have been promoted to Owner")
+    
+    return {"message": "User promoted to owner successfully"}
+
+@api_router.post("/owner/demote-owner/{user_id}")
+async def demote_owner(user_id: str, current_user: User = Depends(get_owner_user)):
+    target_user = await db.users.find_one({"id": user_id})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if target_user['role'] != 'owner':
+        raise HTTPException(status_code=400, detail="User is not an owner")
+    
+    if user_id == current_user.id:
+        # Check if this is the last owner
+        owner_count = await db.users.count_documents({"role": "owner"})
+        if owner_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot remove the last owner")
+    
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"role": "admin", "plan": "premium", "credits": 1000}}
+    )
+    
+    await create_audit_log(
+        action_type="owner_demoted",
+        performed_by=current_user.id,
+        target_user=user_id,
+        details=f"Demoted {target_user['email']} from owner to admin"
+    )
+    
+    await create_notification(user_id, "role_change", "Your owner privileges have been removed")
+    
+    return {"message": "Owner privileges removed"}
+
+@api_router.get("/owner/all-owners")
+async def get_all_owners(current_user: User = Depends(get_owner_user)):
+    owners = await db.users.find({"role": "owner"}, {"_id": 0, "password_hash": 0, "otp_code": 0}).to_list(100)
+    return owners
+
+@api_router.get("/owner/audit-logs")
+async def get_audit_logs(
+    limit: int = 100,
+    action_type: Optional[str] = None,
+    current_user: User = Depends(get_owner_user)
+):
+    query = {}
+    if action_type:
+        query["action_type"] = action_type
+    
+    logs = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+    
+    for log in logs:
+        if log.get('performed_by'):
+            user = await db.users.find_one(
+                {"id": log['performed_by']},
+                {"_id": 0, "email": 1, "name": 1, "username": 1, "role": 1}
+            )
+            if user:
+                log['performed_by_info'] = user
+        
+        if log.get('target_user'):
+            target = await db.users.find_one(
+                {"id": log['target_user']},
+                {"_id": 0, "email": 1, "name": 1, "username": 1, "role": 1}
+            )
+            if target:
+                log['target_user_info'] = target
+    
+    return logs
+
 app.include_router(api_router)
 
 app.add_middleware(
