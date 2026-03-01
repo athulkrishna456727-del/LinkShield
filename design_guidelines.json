@@ -1,0 +1,164 @@
+{
+  "identity": {
+    "name": "Link Shield",
+    "tone": "Cyberpunk Security, Elite, Precision, Trustworthy",
+    "theme_mode": "dark",
+    "description": "A high-precision cybersecurity scanning platform for professionals.",
+    "keywords": ["Cybersecurity", "Threat Intelligence", "Malware Analysis", "Zero Trust"]
+  },
+  "typography": {
+    "primary_font": "Inter, sans-serif",
+    "heading_font": "Space Grotesk, sans-serif",
+    "mono_font": "JetBrains Mono, monospace",
+    "scale": {
+      "h1": "text-5xl md:text-7xl font-bold tracking-tighter",
+      "h2": "text-3xl md:text-5xl font-bold tracking-tight",
+      "h3": "text-2xl md:text-3xl font-semibold tracking-tight",
+      "body": "text-base leading-relaxed text-muted-foreground",
+      "mono": "font-mono text-sm tracking-wide text-primary"
+    },
+    "imports": [
+      "@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap');"
+    ]
+  },
+  "colors": {
+    "palette": {
+      "background": "#020204",
+      "foreground": "#EDEDED",
+      "card": "#0A0A0B",
+      "card_foreground": "#FFFFFF",
+      "popover": "#050505",
+      "popover_foreground": "#EDEDED",
+      "primary": "#00FF94",
+      "primary_foreground": "#000000",
+      "secondary": "#1A1A1D",
+      "secondary_foreground": "#FFFFFF",
+      "muted": "#1A1A1D",
+      "muted_foreground": "#A1A1AA",
+      "accent": "#28282D",
+      "accent_foreground": "#00FF94",
+      "destructive": "#FF003D",
+      "destructive_foreground": "#FFFFFF",
+      "border": "#27272A",
+      "input": "#27272A",
+      "ring": "#00FF94"
+    },
+    "gradients": {
+      "hero_glow": "radial-gradient(circle at center, rgba(0, 255, 148, 0.15) 0%, rgba(2, 2, 4, 0) 70%)",
+      "card_shimmer": "linear-gradient(110deg, transparent 0%, rgba(0, 255, 148, 0.1) 50%, transparent 100%)",
+      "scanner_beam": "linear-gradient(to bottom, transparent, #00FF94, transparent)"
+    }
+  },
+  "visual_enhancers": {
+    "borders": {
+      "default": "border border-border",
+      "glow": "border border-primary/50 shadow-[0_0_15px_rgba(0,255,148,0.3)]",
+      "subtle": "border border-white/10"
+    },
+    "shadows": {
+      "card": "shadow-xl shadow-black/50",
+      "neon": "shadow-[0_0_20px_rgba(0,255,148,0.2)]",
+      "danger": "shadow-[0_0_20px_rgba(255,0,61,0.2)]"
+    },
+    "glassmorphism": {
+      "default": "bg-black/40 backdrop-blur-xl border-b border-white/10",
+      "card": "bg-zinc-900/50 backdrop-blur-md border border-white/5"
+    },
+    "textures": {
+      "grid": "bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]",
+      "dots": "bg-[radial-gradient(#333_1px,transparent_1px)] [background-size:16px_16px]"
+    }
+  },
+  "layout_strategies": {
+    "dashboard_grid": "grid grid-cols-1 md:grid-cols-12 gap-6 p-6",
+    "scanner_layout": "flex flex-col items-center justify-center min-h-[60vh] max-w-3xl mx-auto space-y-8",
+    "marketing_section": "py-24 px-6 md:px-12 max-w-7xl mx-auto",
+    "bento_grid": {
+      "wrapper": "grid grid-cols-1 md:grid-cols-4 gap-4",
+      "hero_cell": "md:col-span-2 md:row-span-2",
+      "tall_cell": "md:col-span-1 md:row-span-2",
+      "standard_cell": "md:col-span-1 md:row-span-1"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_20px_-5px_rgba(0,255,148,0.4)] transition-all duration-300 font-medium tracking-wide rounded-md px-6 py-2.5",
+      "secondary": "bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-white/10 transition-all rounded-md px-6 py-2.5",
+      "outline": "border border-primary/50 text-primary hover:bg-primary/10 transition-all rounded-md px-6 py-2.5",
+      "ghost": "hover:bg-accent hover:text-accent-foreground transition-all rounded-md px-4 py-2"
+    },
+    "cards": {
+      "base": "bg-card text-card-foreground border border-border rounded-xl p-6 shadow-sm",
+      "interactive": "group relative overflow-hidden bg-card border border-border/50 hover:border-primary/50 transition-all duration-300 rounded-xl p-6",
+      "neon_border": "relative p-[1px] rounded-xl bg-gradient-to-r from-transparent via-primary/50 to-transparent"
+    },
+    "inputs": {
+      "search_bar": "bg-black/50 border border-border/50 focus:border-primary/50 focus:ring-1 focus:ring-primary/50 rounded-lg px-4 py-3 w-full transition-all text-lg font-mono placeholder:text-muted-foreground/50",
+      "file_drop": "border-2 border-dashed border-border hover:border-primary/50 bg-accent/5 hover:bg-accent/10 transition-all rounded-2xl p-12 text-center cursor-pointer group"
+    },
+    "badges": {
+      "safe": "bg-green-500/10 text-green-400 border border-green-500/20 px-2.5 py-0.5 rounded-full text-xs font-mono uppercase tracking-wider",
+      "malicious": "bg-red-500/10 text-red-400 border border-red-500/20 px-2.5 py-0.5 rounded-full text-xs font-mono uppercase tracking-wider",
+      "suspicious": "bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2.5 py-0.5 rounded-full text-xs font-mono uppercase tracking-wider",
+      "neutral": "bg-zinc-800 text-zinc-400 border border-zinc-700 px-2.5 py-0.5 rounded-full text-xs font-mono uppercase tracking-wider"
+    }
+  },
+  "image_assets": {
+    "hero_background": {
+      "url": "https://images.unsplash.com/photo-1643398899826-2fca1e015fad?q=85&w=1920&auto=format&fit=crop",
+      "alt": "Abstract neon cybersecurity network background",
+      "usage": "Hero section background with heavy overlay/blur"
+    },
+    "feature_threat_intel": {
+      "url": "https://images.unsplash.com/photo-1760199789463-b523db55dd8b?q=85&w=800&auto=format&fit=crop",
+      "alt": "Hacker typing code in dark room",
+      "usage": "Threat Intelligence feature section"
+    },
+    "feature_secure_access": {
+      "url": "https://images.unsplash.com/photo-1768839722988-91767bb82b10?q=85&w=800&auto=format&fit=crop",
+      "alt": "Padlock and keys on keyboard",
+      "usage": "Security/Access feature section"
+    },
+    "placeholder_user": {
+      "url": "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix",
+      "alt": "User Avatar"
+    }
+  },
+  "motion": {
+    "fade_in": {
+      "initial": { "opacity": 0, "y": 20 },
+      "animate": { "opacity": 1, "y": 0 },
+      "transition": { "duration": 0.5, "ease": "easeOut" }
+    },
+    "stagger_container": {
+      "hidden": { "opacity": 0 },
+      "show": {
+        "opacity": 1,
+        "transition": {
+          "staggerChildren": 0.1
+        }
+      }
+    },
+    "glitch_effect": "animate-pulse",
+    "pulse_slow": "animate-[pulse_4s_cubic-bezier(0.4,0,0.6,1)_infinite]"
+  },
+  "universal_guidelines": [
+    "NEVER use gradients for text readability; ensure high contrast (WCAG AA).",
+    "ALWAYS use 'Space Grotesk' for headings and 'Inter' for body.",
+    "ALWAYS use 'JetBrains Mono' for technical data (IPs, hashes, code).",
+    "Use the 'Green (#00FF94)' color SPARINGLY for emphasis and success states.",
+    "Use the 'Red (#FF003D)' color only for critical threats/errors.",
+    "Dashboard cards must be uniform in height where possible (use h-full).",
+    "Inputs should look like terminal command lines or precision instruments.",
+    "Add 'data-testid' to all interactive elements."
+  ],
+  "instructions_to_main_agent": {
+    "step_1": "Update tailwind.config.js with the new color palette and font families.",
+    "step_2": "Install 'lucide-react' for icons.",
+    "step_3": "Create a reusable 'Card' component that supports the 'neon_border' variant.",
+    "step_4": "Implement the Layout wrapper with the 'hero_background' image and a dark overlay.",
+    "step_5": "Build the Landing Page using the 'marketing_section' layout and 'stagger_container' animations.",
+    "step_6": "Build the Dashboard using the 'bento_grid' layout.",
+    "step_7": "Ensure all text contrast ratios meet accessibility standards on the dark background."
+  }
+}
