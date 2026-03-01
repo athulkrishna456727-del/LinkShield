@@ -1053,10 +1053,19 @@ async def create_admin(data: CreateAdmin, current_user: User = Depends(get_owner
         "role": "admin",
         "plan": "premium",
         "credits": 1000,
+        "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     
     await db.users.insert_one(user_doc)
+    
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": current_user.id,
+        "action": "admin_created",
+        "details": f"Created admin account: {data.email}",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
     
     return {
         "message": "Admin created successfully",
@@ -1074,7 +1083,133 @@ async def remove_admin(user_id: str, current_user: User = Depends(get_owner_user
         raise HTTPException(status_code=400, detail="User is not an admin")
     
     await db.users.update_one({"id": user_id}, {"$set": {"role": "user", "plan": "free"}})
+    
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": current_user.id,
+        "action": "admin_removed",
+        "details": f"Removed admin privileges from: {target_user['email']}",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
     return {"message": "Admin privileges removed"}
+
+@api_router.get("/owner/admins")
+async def get_all_admins(current_user: User = Depends(get_owner_user)):
+    admins = await db.users.find({"role": "admin"}, {"_id": 0, "password_hash": 0}).to_list(100)
+    return admins
+
+@api_router.put("/owner/users/{user_id}/reset-password")
+async def owner_reset_password(user_id: str, data: ResetUserPassword, current_user: User = Depends(get_owner_user)):
+    target_user = await db.users.find_one({"id": user_id})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    new_hash = hash_password(data.new_password)
+    await db.users.update_one({"id": user_id}, {"$set": {"password_hash": new_hash}})
+    
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": current_user.id,
+        "action": "password_reset",
+        "details": f"Reset password for: {target_user['email']}",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    await create_notification(user_id, "password_reset", "Your password has been reset by system owner")
+    
+    return {"message": "Password reset successfully"}
+
+@api_router.get("/owner/system-settings")
+async def get_system_settings(current_user: User = Depends(get_owner_user)):
+    settings = await db.system_settings.find_one({"_id": "main"}, {"_id": 0})
+    if not settings:
+        settings = {
+            "maintenance_mode": False,
+            "scan_url_cost_free": 5,
+            "scan_url_cost_premium": 3,
+            "scan_file_cost_free": 10,
+            "scan_file_cost_premium": 6
+        }
+    return settings
+
+@api_router.put("/owner/system-settings")
+async def update_system_settings(data: SystemSettings, current_user: User = Depends(get_owner_user)):
+    await db.system_settings.update_one(
+        {"_id": "main"},
+        {"$set": data.model_dump()},
+        upsert=True
+    )
+    
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": current_user.id,
+        "action": "system_settings_updated",
+        "details": "Updated system settings",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"message": "System settings updated successfully"}
+
+@api_router.get("/owner/revenue")
+async def get_revenue_overview(current_user: User = Depends(get_owner_user)):
+    total_pipeline = [
+        {"$match": {"status": "completed"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]
+    total_result = await db.transactions.aggregate(total_pipeline).to_list(1)
+    total_revenue = total_result[0]['total'] if total_result else 0
+    
+    monthly_pipeline = [
+        {
+            "$match": {
+                "status": "completed",
+                "created_at": {"$gte": datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0).isoformat()}
+            }
+        },
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]
+    monthly_result = await db.transactions.aggregate(monthly_pipeline).to_list(1)
+    monthly_revenue = monthly_result[0]['total'] if monthly_result else 0
+    
+    plan_breakdown = []
+    for plan in ['premium', 'enterprise']:
+        plan_pipeline = [
+            {"$match": {"status": "completed", "plan": plan}},
+            {"$group": {"_id": None, "total": {"$sum": "$amount"}, "count": {"$sum": 1}}}
+        ]
+        plan_result = await db.transactions.aggregate(plan_pipeline).to_list(1)
+        if plan_result:
+            plan_breakdown.append({
+                "plan": plan,
+                "revenue": plan_result[0]['total'],
+                "transactions": plan_result[0]['count']
+            })
+    
+    return {
+        "total_revenue": total_revenue,
+        "monthly_revenue": monthly_revenue,
+        "plan_breakdown": plan_breakdown
+    }
+
+@api_router.get("/owner/activity-logs")
+async def get_all_activity_logs(
+    limit: int = 100,
+    action: Optional[str] = None,
+    current_user: User = Depends(get_owner_user)
+):
+    query = {}
+    if action:
+        query["action"] = action
+    
+    logs = await db.activity_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+    
+    for log in logs:
+        user = await db.users.find_one({"id": log['user_id']}, {"_id": 0, "email": 1, "name": 1, "role": 1})
+        if user:
+            log['user_info'] = user
+    
+    return logs
 
 app.include_router(api_router)
 
