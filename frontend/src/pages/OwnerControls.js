@@ -241,37 +241,43 @@ const OwnerControls = () => {
           </TabsContent>
 
           <TabsContent value="system" className="space-y-6">
-            <h2 className="font-heading text-2xl font-semibold mb-4">System Information</h2>
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between py-2 border-b border-border/50">
-                <span className="text-muted-foreground">Your Role</span>
-                <span className="font-mono font-semibold text-primary">OWNER</span>
-              </div>
-              <div className="flex justify-between py-2 border-b border-border/50">
-                <span className="text-muted-foreground">Plan</span>
-                <span className="font-mono font-semibold text-primary">ENTERPRISE</span>
-              </div>
-              <div className="flex justify-between py-2">
-                <span className="text-muted-foreground">Credits</span>
-                <span className="font-mono font-semibold">UNLIMITED</span>
+            <div className="bg-card border border-border rounded-xl p-6">
+              <h2 className="font-heading text-2xl font-semibold mb-4">System Information</h2>
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between py-2 border-b border-border/50">
+                  <span className="text-muted-foreground">Your Role</span>
+                  <span className="font-mono font-semibold text-primary">OWNER</span>
+                </div>
+                <div className="flex justify-between py-2 border-b border-border/50">
+                  <span className="text-muted-foreground">Username</span>
+                  <span className="font-mono font-semibold">@{user?.username}</span>
+                </div>
+                <div className="flex justify-between py-2 border-b border-border/50">
+                  <span className="text-muted-foreground">Plan</span>
+                  <span className="font-mono font-semibold text-primary">ENTERPRISE</span>
+                </div>
+                <div className="flex justify-between py-2">
+                  <span className="text-muted-foreground">Credits</span>
+                  <span className="font-mono font-semibold">UNLIMITED</span>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="bg-card border border-border rounded-xl p-6">
-            <h2 className="font-heading text-2xl font-semibold mb-4">Quick Actions</h2>
-            <div className="space-y-3">
-              <Button
-                variant="outline"
-                className="w-full justify-start"
-                onClick={() => navigate('/admin')}
-                data-testid="goto-admin-dashboard-btn"
-              >
-                Manage Users & System
-              </Button>
+            <div className="bg-card border border-border rounded-xl p-6">
+              <h2 className="font-heading text-2xl font-semibold mb-4">Quick Actions</h2>
+              <div className="space-y-3">
+                <Button
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={() => navigate('/admin')}
+                  data-testid="goto-admin-dashboard-btn"
+                >
+                  Manage Users & System
+                </Button>
+              </div>
             </div>
-          </div>
-        </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </Layout>
   );
