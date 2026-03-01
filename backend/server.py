@@ -1176,10 +1176,32 @@ async def update_user_credits(user_id: str, data: UpdateUserCredits):
     return {"message": "Credits updated"}
 
 @api_router.put("/admin/users/{user_id}/plan", dependencies=[Depends(get_admin_user)])
-async def update_user_plan(user_id: str, data: UpdateUserPlan):
-    result = await db.users.update_one({"id": user_id}, {"$set": {"plan": data.plan}})
-    if result.matched_count == 0:
+async def update_user_plan(user_id: str, data: UpdateUserPlan, current_user: User = Depends(get_current_user)):
+    target_user = await db.users.find_one({"id": user_id})
+    if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    old_plan = target_user['plan']
+    new_credits = PLAN_FEATURES[data.plan]['credits_per_month']
+    
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"plan": data.plan, "credits": new_credits}}
+    )
+    
+    await create_audit_log(
+        action_type="plan_changed",
+        performed_by=current_user.id,
+        target_user=user_id,
+        details=f"Plan changed from {old_plan} to {data.plan}"
+    )
+    
+    await create_notification(
+        user_id,
+        "plan_changed",
+        f"Your plan has been updated to {data.plan.upper()}"
+    )
+    
     return {"message": "Plan updated"}
 
 @api_router.put("/admin/users/{user_id}/role")
