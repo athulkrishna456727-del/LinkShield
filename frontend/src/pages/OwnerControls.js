@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
-import { Crown, UserPlus, UserMinus, Mail, Lock, User } from 'lucide-react';
+import { Crown, UserPlus, Mail, Lock, User, Activity, Filter } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 
@@ -21,6 +22,31 @@ const OwnerControls = () => {
     temporaryPassword: ''
   });
   const [loading, setLoading] = useState(false);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [filterActionType, setFilterActionType] = useState('');
+
+  useEffect(() => {
+    if (user?.role === 'owner') {
+      fetchAuditLogs();
+    }
+  }, [user, filterActionType]);
+
+  const fetchAuditLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const params = filterActionType ? { action_type: filterActionType, limit: 50 } : { limit: 50 };
+      const response = await axios.get(`${API_URL}/owner/audit-logs`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params
+      });
+      setAuditLogs(response.data);
+    } catch (error) {
+      console.error('Failed to fetch audit logs', error);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
 
   if (user?.role !== 'owner') {
     navigate('/dashboard');
@@ -31,7 +57,7 @@ const OwnerControls = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      const response = await axios.post(
+      await axios.post(
         `${API_URL}/owner/create-admin`,
         {
           email: createAdminForm.email,
@@ -43,10 +69,19 @@ const OwnerControls = () => {
       toast.success('Admin account created successfully');
       setCreateAdminForm({ email: '', name: '', temporaryPassword: '' });
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create admin');
+      const errorMsg = error.response?.data?.detail || 'Failed to create admin';
+      toast.error(typeof errorMsg === 'string' ? errorMsg : 'Failed to create admin');
     } finally {
       setLoading(false);
     }
+  };
+
+  const getActionBadgeColor = (actionType) => {
+    if (actionType.includes('owner')) return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+    if (actionType.includes('role')) return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+    if (actionType.includes('plan')) return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20';
+    if (actionType.includes('credit')) return 'bg-green-500/10 text-green-400 border-green-500/20';
+    return 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20';
   };
 
   return (
