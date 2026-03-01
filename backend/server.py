@@ -407,7 +407,83 @@ async def signup(data: UserSignup):
         "requires_verification": True
     }
 
-@api_router.post("/auth/login")
+@api_router.post("/auth/verify-otp")
+async def verify_otp(data: VerifyOTP):
+    user = await db.users.find_one({"email": data.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.get('email_verified', False):
+        raise HTTPException(status_code=400, detail="Email already verified")
+    
+    # Check OTP attempts
+    if user.get('otp_attempts', 0) >= 5:
+        raise HTTPException(status_code=429, detail="Too many attempts. Please request a new OTP")
+    
+    # Check OTP expiry
+    if datetime.fromisoformat(user['otp_expiry']) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="OTP expired. Please request a new one")
+    
+    # Verify OTP
+    if user['otp_code'] != data.otp_code:
+        await db.users.update_one(
+            {"id": user['id']},
+            {"$inc": {"otp_attempts": 1}}
+        )
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    
+    # Mark as verified
+    await db.users.update_one(
+        {"id": user['id']},
+        {
+            "$set": {
+                "email_verified": True,
+                "otp_code": None,
+                "otp_expiry": None,
+                "otp_attempts": 0
+            }
+        }
+    )
+    
+    await create_audit_log(
+        action_type="email_verified",
+        performed_by=user['id'],
+        details=f"Email verified: {data.email}"
+    )
+    
+    # Generate token
+    token = create_token(user['id'], user['email'], user['role'])
+    user_response = {k: v for k, v in user.items() if k not in ["password_hash", "_id", "otp_code"]}
+    
+    return {"token": token, "user": user_response, "message": "Email verified successfully"}
+
+@api_router.post("/auth/resend-otp")
+async def resend_otp(email: EmailStr):
+    user = await db.users.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.get('email_verified', False):
+        raise HTTPException(status_code=400, detail="Email already verified")
+    
+    # Generate new OTP
+    otp_code = generate_otp()
+    otp_expiry = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    
+    await db.users.update_one(
+        {"id": user['id']},
+        {
+            "$set": {
+                "otp_code": otp_code,
+                "otp_expiry": otp_expiry,
+                "otp_attempts": 0
+            }
+        }
+    )
+    
+    await send_otp_email(email, otp_code)
+    
+    return {"message": "New OTP sent to your email"}
 async def login(data: UserLogin):
     user = await db.users.find_one({"email": data.email})
     if not user or not verify_password(data.password, user['password_hash']):
