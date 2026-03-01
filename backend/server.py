@@ -489,8 +489,22 @@ async def login(data: UserLogin):
     if not user or not verify_password(data.password, user['password_hash']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
+    # Check if email is verified
+    if not user.get('email_verified', False):
+        return {
+            "requires_verification": True,
+            "email": data.email,
+            "message": "Please verify your email with OTP before logging in"
+        }
+    
     token = create_token(user['id'], user['email'], user['role'])
-    user_response = {k: v for k, v in user.items() if k != "password_hash" and k != "_id"}
+    user_response = {k: v for k, v in user.items() if k not in ["password_hash", "_id", "otp_code"]}
+    
+    await create_audit_log(
+        action_type="user_login",
+        performed_by=user['id'],
+        details=f"User login: {data.email}"
+    )
     
     return {"token": token, "user": user_response}
 
