@@ -62,8 +62,22 @@ const Layout = ({ children }) => {
                 <div className="flex items-center space-x-4 ml-4 pl-4 border-l border-border">
                   <div className="flex items-center space-x-2 px-3 py-1 bg-card border border-border rounded-lg">
                     <CreditCard className="h-4 w-4 text-primary" />
-                    <span className="font-mono text-sm font-semibold text-foreground" data-testid="nav-credits">{user.credits}</span>
+                    <span className="font-mono text-sm font-semibold text-foreground" data-testid="nav-credits">{user.credits === 999999 ? '\u221E' : user.credits}</span>
                   </div>
+
+                  {user.role === 'owner' && (
+                    <Link to="/owner" data-testid="nav-owner">
+                      <Button variant="ghost" size="sm" className="flex items-center space-x-2">
+                        <Crown className="h-5 w-5 text-yellow-400" />
+                      </Button>
+                    </Link>
+                  )}
+
+                  <Link to="/settings" data-testid="nav-settings">
+                    <Button variant="ghost" size="sm" className="flex items-center space-x-2">
+                      <Settings className="h-5 w-5" />
+                    </Button>
+                  </Link>
 
                   <Link to="/profile" data-testid="nav-profile">
                     <Button variant="ghost" size="sm" className="flex items-center space-x-2">
