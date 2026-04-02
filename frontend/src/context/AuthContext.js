@@ -35,23 +35,11 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const response = await axios.post(`${API_URL}/auth/login`, { email, password });
-    
-    // Check if verification is required
-    if (response.data.requires_verification) {
-      return {
-        requiresVerification: true,
-        email: response.data.email,
-        message: response.data.message || 'Please verify your email'
-      };
-    }
-    
-    // Normal login flow
     if (response.data.token && response.data.user) {
       setToken(response.data.token);
       setUser(response.data.user);
       localStorage.setItem('token', response.data.token);
     }
-    
     return response.data;
   };
 
@@ -62,43 +50,11 @@ export const AuthProvider = ({ children }) => {
       name, 
       username 
     });
-    
-    // New signup flow returns requires_verification
-    if (response.data.requires_verification) {
-      return {
-        requiresVerification: true,
-        email: response.data.email,
-        message: response.data.message || 'Please verify your email'
-      };
-    }
-    
-    // Legacy flow (if verification not enabled)
     if (response.data.token && response.data.user) {
       setToken(response.data.token);
       setUser(response.data.user);
       localStorage.setItem('token', response.data.token);
     }
-    
-    return response.data;
-  };
-
-  const verifyOTP = async (email, otpCode) => {
-    const response = await axios.post(`${API_URL}/auth/verify-otp`, {
-      email,
-      otp_code: otpCode
-    });
-    
-    if (response.data.token && response.data.user) {
-      setToken(response.data.token);
-      setUser(response.data.user);
-      localStorage.setItem('token', response.data.token);
-    }
-    
-    return response.data;
-  };
-
-  const resendOTP = async (email) => {
-    const response = await axios.post(`${API_URL}/auth/resend-otp`, { email });
     return response.data;
   };
 
@@ -120,8 +76,6 @@ export const AuthProvider = ({ children }) => {
       token, 
       login, 
       signup, 
-      verifyOTP,
-      resendOTP,
       logout, 
       loading, 
       refreshUser 
