@@ -1169,10 +1169,23 @@ async def create_admin(data: CreateAdmin, current_user: User = Depends(get_owner
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # Generate username from email prefix
+    username = data.email.split('@')[0].lower().replace('.', '_').replace('-', '_')
+    username = re.sub(r'[^a-z0-9_]', '', username)[:20]
+    # Ensure uniqueness
+    existing_username = await db.users.find_one({"username": username})
+    counter = 1
+    base_username = username
+    while existing_username:
+        username = f"{base_username}{counter}"[:20]
+        existing_username = await db.users.find_one({"username": username})
+        counter += 1
+    
     user_id = str(uuid.uuid4())
     user_doc = {
         "id": user_id,
         "email": data.email,
+        "username": username,
         "password_hash": hash_password(data.temporary_password),
         "name": data.name,
         "role": "admin",
