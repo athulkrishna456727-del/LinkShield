@@ -31,19 +31,16 @@ Build a full-stack SaaS web application called "Link Shield" — a cybersecurity
 - **scans**: {id, user_id, scan_type, target, status, risk_score, risk_level, metadata, iocs, summary, created_at}
 - **transactions**: {id, user_id, plan, amount, status, order_id, payment_id, created_at}
 - **audit_logs**: {id, action_type, performed_by, target_user, details, timestamp}
+- **payment_settings**: {_id: "razorpay", gateway, key_id, key_secret_encrypted, is_active, updated_at, updated_by}
 - **credit_history**: {id, user_id, amount, reason, scan_id, admin_id, timestamp}
 - **notifications**: {id, user_id, type, message, read, created_at}
-- **activity_logs**: {id, user_id, action, details, timestamp}
-- **system_settings**: {_id: "main", maintenance_mode, scan costs, file size limits}
 
 ## Key API Endpoints
 - `/api/auth/{signup, login, me}`
-- `/api/account/{email, password, username}`
 - `/api/scan/{url, file, {scan_id}, history/list}`
-- `/api/user/{profile, stats, credits/history, notifications}`
-- `/api/billing/{plans, upgrade, create-order, verify-payment, webhook, history}`
-- `/api/admin/{users, stats, scans, analytics, activity}`
-- `/api/owner/{create-admin, remove-admin, admins, audit-logs, system-settings, revenue}`
+- `/api/admin/users/{user_id}/{plan, role, status, add-credits, deduct-credits, reset-credits}`
+- `/api/owner/{create-admin, payment-settings, payment-settings/test, audit-logs}`
+- `/api/billing/{plans, create-order, verify-payment, webhook}`
 
 ## Test Credentials
 - **Owner**: athulkrishna456727@gmail.com / #AThr401012#
@@ -53,26 +50,30 @@ Build a full-stack SaaS web application called "Link Shield" — a cybersecurity
 - [x] Full auth system (signup/login with JWT, no OTP)
 - [x] Role-based access (user/admin/owner)
 - [x] User dashboard with Quick Scan, stats, recent scans
-- [x] URL scanning with simulated risk analysis
-- [x] File scanning with simulated analysis
+- [x] URL/File scanning with simulated risk analysis
 - [x] Scan result detail pages with metadata + IOCs
 - [x] Scan history with search and truncation
 - [x] Credit system (deduction on scan, history tracking)
 - [x] Plans page (Free/Premium/Enterprise) with pricing
-- [x] Admin dashboard (Overview, Users, Scans, Analytics tabs)
-- [x] Owner Controls (Create Admin, Audit Logs, System Info + Quick Actions)
+- [x] Admin dashboard (Overview, Users, Scans, Analytics, Owner tabs)
+- [x] **Owner Plan Management** — promote/demote user plans from Admin > Users tab with confirmation dialog, auto-credit update, audit logging
+- [x] **Payment Settings** — Owner Controls > Payment Settings tab for dynamic Razorpay key management (encrypted storage, test connection, no restart needed)
+- [x] Owner Controls (Create Admin, Payment Settings, Audit Logs, System Info + Quick Actions)
+- [x] Modular payment gateway architecture (Razorpay active, Stripe/PayPal slots ready)
 - [x] Account settings (change email/password/username)
 - [x] Notifications system
-- [x] Audit logging for sensitive actions
+- [x] Audit logging for all sensitive actions
 - [x] Text overflow fix for long URLs/filenames
 - [x] OTP system removed (direct signup/login)
 
 ## MOCKED Features
 - **Scanning engine**: Simulated risk analysis (not real security scanning)
-- **Razorpay**: Placeholder demo keys — create-order fails (needs real keys)
+- **Razorpay**: Demo keys in .env — create-order fails without real keys. Owner can update via Payment Settings.
 
 ## Backlog / Future Tasks
-- [ ] Complete Razorpay integration with real API keys
+- [ ] Complete Razorpay integration with real API keys (owner can set via UI)
+- [ ] Add Stripe gateway support
+- [ ] Add PayPal gateway support
 - [ ] Production hardening (JWT secret rotation, rate limiting, security headers)
 - [ ] Real scanning engine integration
 - [ ] Email notifications (SendGrid/SES)
