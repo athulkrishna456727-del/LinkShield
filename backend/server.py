@@ -17,6 +17,8 @@ import random
 import re
 import razorpay
 import hmac
+from cryptography.fernet import Fernet
+import base64
 
 def validate_username(username: str) -> bool:
     """Validate username format: letters, numbers, underscore only"""
@@ -48,9 +50,47 @@ security = HTTPBearer()
 JWT_SECRET = os.environ.get('JWT_SECRET', 'link-shield-secret-key-change-in-production')
 JWT_ALGORITHM = 'HS256'
 
-RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', 'rzp_test_demo_key')
-RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', 'rzp_test_demo_secret')
-razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+# Encryption key derived from JWT_SECRET for payment key storage
+_fernet_key = base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET.encode()).digest())
+fernet = Fernet(_fernet_key)
+
+def encrypt_value(value: str) -> str:
+    return fernet.encrypt(value.encode()).decode()
+
+def decrypt_value(encrypted: str) -> str:
+    return fernet.decrypt(encrypted.encode()).decode()
+
+def mask_key(value: str) -> str:
+    if len(value) <= 8:
+        return "****"
+    return value[:4] + "*" * (len(value) - 8) + value[-4:]
+
+# Default Razorpay keys from env (fallback)
+DEFAULT_RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', 'rzp_test_demo_key')
+DEFAULT_RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', 'rzp_test_demo_secret')
+
+async def get_payment_gateway_config():
+    """Load payment gateway config from DB, fallback to env vars"""
+    settings = await db.payment_settings.find_one({"_id": "razorpay"})
+    if settings and settings.get("key_id") and settings.get("key_secret_encrypted"):
+        try:
+            return {
+                "gateway": "razorpay",
+                "key_id": settings["key_id"],
+                "key_secret": decrypt_value(settings["key_secret_encrypted"]),
+                "is_active": settings.get("is_active", True)
+            }
+        except Exception:
+            pass
+    return {
+        "gateway": "razorpay",
+        "key_id": DEFAULT_RAZORPAY_KEY_ID,
+        "key_secret": DEFAULT_RAZORPAY_KEY_SECRET,
+        "is_active": True
+    }
+
+def create_razorpay_client(key_id: str, key_secret: str):
+    return razorpay.Client(auth=(key_id, key_secret))
 
 PLAN_PRICES = {
     'free': 0,
@@ -148,6 +188,12 @@ class SystemSettings(BaseModel):
     max_file_size_free: int = 10485760
     max_file_size_premium: int = 104857600
     max_file_size_enterprise: int = 524288000
+
+class PaymentSettingsUpdate(BaseModel):
+    gateway: str = "razorpay"
+    key_id: str
+    key_secret: str
+    is_active: bool = True
 
 class URLScanRequest(BaseModel):
     url: str
@@ -692,8 +738,13 @@ async def create_razorpay_order(data: CreateOrderRequest, user: User = Depends(g
         raise HTTPException(status_code=400, detail="Already on this plan")
     
     amount = PLAN_PRICES[data.plan]
+    gateway_config = await get_payment_gateway_config()
+    
+    if not gateway_config["is_active"]:
+        raise HTTPException(status_code=503, detail="Payment gateway is currently disabled")
     
     try:
+        rz_client = create_razorpay_client(gateway_config["key_id"], gateway_config["key_secret"])
         order_data = {
             'amount': amount * 100,
             'currency': 'INR',
@@ -705,7 +756,7 @@ async def create_razorpay_order(data: CreateOrderRequest, user: User = Depends(g
             }
         }
         
-        order = razorpay_client.order.create(data=order_data)
+        order = rz_client.order.create(data=order_data)
         
         transaction_id = str(uuid.uuid4())
         await db.transactions.insert_one({
@@ -723,7 +774,7 @@ async def create_razorpay_order(data: CreateOrderRequest, user: User = Depends(g
             "order_id": order['id'],
             "amount": amount,
             "currency": "INR",
-            "key_id": RAZORPAY_KEY_ID,
+            "key_id": gateway_config["key_id"],
             "transaction_id": transaction_id
         }
     except Exception as e:
@@ -732,9 +783,10 @@ async def create_razorpay_order(data: CreateOrderRequest, user: User = Depends(g
 @api_router.post("/billing/verify-payment")
 async def verify_payment(data: VerifyPaymentRequest, user: User = Depends(get_current_user)):
     try:
+        gateway_config = await get_payment_gateway_config()
         signature_string = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
         generated_signature = hmac.new(
-            RAZORPAY_KEY_SECRET.encode(),
+            gateway_config["key_secret"].encode(),
             signature_string.encode(),
             hashlib.sha256
         ).hexdigest()
@@ -801,13 +853,15 @@ async def verify_payment(data: VerifyPaymentRequest, user: User = Depends(get_cu
 @api_router.post("/billing/webhook")
 async def razorpay_webhook(request: Request):
     try:
+        gateway_config = await get_payment_gateway_config()
         webhook_signature = request.headers.get('X-Razorpay-Signature')
         webhook_body = await request.body()
         
-        razorpay_client.utility.verify_webhook_signature(
+        rz_client = create_razorpay_client(gateway_config["key_id"], gateway_config["key_secret"])
+        rz_client.utility.verify_webhook_signature(
             webhook_body.decode(),
             webhook_signature,
-            RAZORPAY_KEY_SECRET
+            gateway_config["key_secret"]
         )
         
         payload = await request.json()
@@ -1440,6 +1494,71 @@ async def get_audit_logs(
                 log['target_user_info'] = target
     
     return logs
+
+@api_router.get("/owner/payment-settings")
+async def get_payment_settings(current_user: User = Depends(get_owner_user)):
+    settings = await db.payment_settings.find_one({"_id": "razorpay"})
+    if settings:
+        return {
+            "gateway": "razorpay",
+            "key_id": settings.get("key_id", ""),
+            "key_secret_masked": mask_key(decrypt_value(settings["key_secret_encrypted"])) if settings.get("key_secret_encrypted") else "",
+            "is_active": settings.get("is_active", True),
+            "updated_at": settings.get("updated_at", ""),
+            "updated_by": settings.get("updated_by", "")
+        }
+    return {
+        "gateway": "razorpay",
+        "key_id": DEFAULT_RAZORPAY_KEY_ID,
+        "key_secret_masked": mask_key(DEFAULT_RAZORPAY_KEY_SECRET),
+        "is_active": True,
+        "updated_at": "",
+        "updated_by": "",
+        "is_default": True
+    }
+
+@api_router.put("/owner/payment-settings")
+async def update_payment_settings(data: PaymentSettingsUpdate, current_user: User = Depends(get_owner_user)):
+    if data.gateway != "razorpay":
+        raise HTTPException(status_code=400, detail="Only Razorpay gateway is currently supported")
+    
+    if not data.key_id or not data.key_secret:
+        raise HTTPException(status_code=400, detail="Key ID and Key Secret are required")
+    
+    encrypted_secret = encrypt_value(data.key_secret)
+    
+    await db.payment_settings.update_one(
+        {"_id": "razorpay"},
+        {"$set": {
+            "gateway": "razorpay",
+            "key_id": data.key_id,
+            "key_secret_encrypted": encrypted_secret,
+            "is_active": data.is_active,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": current_user.id
+        }},
+        upsert=True
+    )
+    
+    await create_audit_log(
+        action_type="payment_settings_updated",
+        performed_by=current_user.id,
+        details=f"Payment gateway settings updated (Razorpay Key: {mask_key(data.key_id)})"
+    )
+    
+    return {"message": "Payment gateway settings updated successfully"}
+
+@api_router.post("/owner/payment-settings/test")
+async def test_payment_settings(current_user: User = Depends(get_owner_user)):
+    """Test if the current payment gateway configuration is valid"""
+    gateway_config = await get_payment_gateway_config()
+    try:
+        rz_client = create_razorpay_client(gateway_config["key_id"], gateway_config["key_secret"])
+        # Try a simple API call to validate keys
+        rz_client.order.all({"count": 1})
+        return {"status": "success", "message": "Payment gateway connection successful"}
+    except Exception as e:
+        return {"status": "error", "message": f"Connection failed: {str(e)}"}
 
 app.include_router(api_router)
 

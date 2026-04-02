@@ -4,18 +4,20 @@ import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
 import { 
   Users, FileSearch, TrendingUp, Crown, Edit, Search, Ban, CheckCircle, 
-  XCircle, Plus, Minus, RotateCcw, Shield, DollarSign, Activity, Settings
+  XCircle, Plus, Minus, RotateCcw, Shield, DollarSign, Activity, ArrowUpDown
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { Label } from '../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
+
+const PLAN_CREDITS = { free: 50, premium: 500, enterprise: 999999 };
 
 const AdminDashboard = () => {
   const { user, token } = useAuth();
@@ -28,6 +30,9 @@ const AdminDashboard = () => {
   const [selectedUser, setSelectedUser] = useState(null);
   const [creditAmount, setCreditAmount] = useState('');
   const [creditReason, setCreditReason] = useState('');
+  const [planChangeUser, setPlanChangeUser] = useState(null);
+  const [newPlan, setNewPlan] = useState('');
+  const [planChangeLoading, setPlanChangeLoading] = useState(false);
 
   useEffect(() => {
     if (user?.role !== 'admin' && user?.role !== 'owner') {
@@ -159,17 +164,23 @@ const AdminDashboard = () => {
     }
   };
 
-  const handleUpdatePlan = async (userId, plan) => {
+  const handlePlanChange = async () => {
+    if (!planChangeUser || !newPlan) return;
+    setPlanChangeLoading(true);
     try {
       await axios.put(
-        `${API_URL}/admin/users/${userId}/plan`,
-        { plan },
+        `${API_URL}/admin/users/${planChangeUser.id}/plan`,
+        { plan: newPlan },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      toast.success('Plan updated successfully');
+      toast.success(`Plan updated to ${newPlan.toUpperCase()} — credits set to ${PLAN_CREDITS[newPlan].toLocaleString()}`);
       fetchUsers();
+      setPlanChangeUser(null);
+      setNewPlan('');
     } catch (error) {
-      toast.error('Failed to update plan');
+      toast.error(error.response?.data?.detail || 'Failed to update plan');
+    } finally {
+      setPlanChangeLoading(false);
     }
   };
 
@@ -190,6 +201,12 @@ const AdminDashboard = () => {
   if (user?.role !== 'admin' && user?.role !== 'owner') {
     return null;
   }
+
+  const getPlanBadgeClass = (plan) => {
+    if (plan === 'enterprise') return 'bg-purple-500/10 text-purple-400 border border-purple-500/20';
+    if (plan === 'premium') return 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20';
+    return 'bg-zinc-800 text-zinc-400 border border-zinc-700';
+  };
 
   return (
     <Layout>
@@ -220,7 +237,6 @@ const AdminDashboard = () => {
                 <p className="text-muted-foreground text-sm">Total Users</p>
                 <p className="font-mono text-3xl font-bold">{stats?.total_users || 0}</p>
               </div>
-
               <div className="bg-card border border-border rounded-xl p-6">
                 <div className="flex items-center justify-between mb-2">
                   <FileSearch className="h-8 w-8 text-primary" />
@@ -228,7 +244,6 @@ const AdminDashboard = () => {
                 <p className="text-muted-foreground text-sm">Total Scans</p>
                 <p className="font-mono text-3xl font-bold">{stats?.total_scans || 0}</p>
               </div>
-
               <div className="bg-card border border-border rounded-xl p-6">
                 <div className="flex items-center justify-between mb-2">
                   <Crown className="h-8 w-8 text-yellow-400" />
@@ -236,7 +251,6 @@ const AdminDashboard = () => {
                 <p className="text-muted-foreground text-sm">Premium Users</p>
                 <p className="font-mono text-3xl font-bold text-yellow-400">{stats?.premium_users || 0}</p>
               </div>
-
               <div className="bg-card border border-border rounded-xl p-6">
                 <div className="flex items-center justify-between mb-2">
                   <TrendingUp className="h-8 w-8 text-green-400" />
@@ -255,7 +269,7 @@ const AdminDashboard = () => {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                     <p className="text-sm text-muted-foreground">Total Revenue</p>
-                    <p className="font-mono text-2xl font-bold">₹{stats.total_revenue}</p>
+                    <p className="font-mono text-2xl font-bold">{stats.total_revenue}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Enterprise Users</p>
@@ -271,6 +285,76 @@ const AdminDashboard = () => {
           </TabsContent>
 
           <TabsContent value="users" className="space-y-6">
+            {/* Plan Change Confirmation Dialog */}
+            <Dialog open={!!planChangeUser} onOpenChange={(open) => { if (!open) { setPlanChangeUser(null); setNewPlan(''); } }}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Change User Plan</DialogTitle>
+                  <DialogDescription>
+                    Update the subscription plan for <span className="font-semibold text-foreground">{planChangeUser?.name}</span> ({planChangeUser?.email})
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 pt-2">
+                  <div className="flex items-center justify-between p-3 bg-accent/30 rounded-lg border border-border/50">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Current Plan</p>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-mono uppercase ${getPlanBadgeClass(planChangeUser?.plan)}`}>
+                        {planChangeUser?.plan}
+                      </span>
+                    </div>
+                    <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
+                    <div>
+                      <p className="text-xs text-muted-foreground">New Plan</p>
+                      {newPlan ? (
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-mono uppercase ${getPlanBadgeClass(newPlan)}`}>
+                          {newPlan}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Select below</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Select New Plan</Label>
+                    <Select value={newPlan} onValueChange={setNewPlan}>
+                      <SelectTrigger className="mt-2" data-testid="plan-select-trigger">
+                        <SelectValue placeholder="Choose plan..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="free">Free (50 credits/mo)</SelectItem>
+                        <SelectItem value="premium">Premium (500 credits/mo)</SelectItem>
+                        <SelectItem value="enterprise">Enterprise (Unlimited)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {newPlan && newPlan !== planChangeUser?.plan && (
+                    <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg text-sm">
+                      <p className="font-medium text-primary mb-1">Changes will apply immediately:</p>
+                      <ul className="space-y-1 text-muted-foreground">
+                        <li>Plan: {planChangeUser?.plan} → <span className="font-semibold text-foreground">{newPlan}</span></li>
+                        <li>Credits will reset to: <span className="font-semibold text-foreground">{PLAN_CREDITS[newPlan]?.toLocaleString()}</span></li>
+                      </ul>
+                    </div>
+                  )}
+                  {newPlan === planChangeUser?.plan && (
+                    <p className="text-sm text-orange-400">User is already on this plan.</p>
+                  )}
+                </div>
+                <DialogFooter className="gap-2">
+                  <Button variant="outline" onClick={() => { setPlanChangeUser(null); setNewPlan(''); }} data-testid="plan-change-cancel-btn">
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={handlePlanChange}
+                    disabled={!newPlan || newPlan === planChangeUser?.plan || planChangeLoading}
+                    data-testid="plan-change-confirm-btn"
+                  >
+                    {planChangeLoading ? 'Updating...' : 'Confirm Change'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
             <div className="bg-card border border-border rounded-xl p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="font-heading text-2xl font-semibold">User Management</h2>
@@ -298,7 +382,7 @@ const AdminDashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((u, idx) => (
+                    {users.map((u) => (
                       <tr key={u.id} className="border-b border-border/50 hover:bg-accent/30">
                         <td className="py-3 px-4">
                           <div>
@@ -307,13 +391,14 @@ const AdminDashboard = () => {
                           </div>
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`px-2 py-1 rounded-full text-xs font-mono uppercase ${
-                            u.plan === 'enterprise' ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' :
-                            u.plan === 'premium' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
-                            'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                          }`}>
+                          <button
+                            onClick={() => { setPlanChangeUser(u); setNewPlan(''); }}
+                            className={`px-2 py-1 rounded-full text-xs font-mono uppercase cursor-pointer hover:opacity-80 transition-opacity ${getPlanBadgeClass(u.plan)}`}
+                            title="Click to change plan"
+                            data-testid={`plan-badge-${u.id}`}
+                          >
                             {u.plan}
-                          </span>
+                          </button>
                         </td>
                         <td className="py-3 px-4 font-mono font-semibold">{u.credits}</td>
                         <td className="py-3 px-4 font-mono text-xs uppercase">{u.role}</td>
@@ -326,6 +411,7 @@ const AdminDashboard = () => {
                                   size="sm"
                                   onClick={() => setSelectedUser(u)}
                                   title="Manage Credits"
+                                  data-testid={`edit-credits-${u.id}`}
                                 >
                                   <Edit className="h-4 w-4" />
                                 </Button>
@@ -375,6 +461,18 @@ const AdminDashboard = () => {
                               </DialogContent>
                             </Dialog>
 
+                            {user?.role === 'owner' && u.role !== 'owner' && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => { setPlanChangeUser(u); setNewPlan(''); }}
+                                title="Change Plan"
+                                data-testid={`change-plan-${u.id}`}
+                              >
+                                <ArrowUpDown className="h-4 w-4 text-primary" />
+                              </Button>
+                            )}
+
                             {u.role !== 'owner' && (
                               <Button
                                 variant="ghost"
@@ -399,18 +497,18 @@ const AdminDashboard = () => {
             <div className="bg-card border border-border rounded-xl p-6">
               <h2 className="font-heading text-2xl font-semibold mb-6">Recent Scans</h2>
               <div className="space-y-3">
-                {scans.map((scan, idx) => (
+                {scans.map((scan) => (
                   <div
                     key={scan.id}
                     className="flex items-center justify-between p-4 bg-accent/30 rounded-lg border border-border/50"
                   >
-                    <div className="flex-1">
-                      <p className="font-mono text-sm font-medium">{scan.target}</p>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-mono text-sm font-medium truncate" title={scan.target}>{scan.target}</p>
                       <p className="text-xs text-muted-foreground">
-                        {scan.user_info?.email || 'Unknown'} • {new Date(scan.created_at).toLocaleString()}
+                        {scan.user_info?.email || 'Unknown'} &bull; {new Date(scan.created_at).toLocaleString()}
                       </p>
                     </div>
-                    <div className="flex items-center space-x-4">
+                    <div className="flex items-center space-x-4 flex-shrink-0">
                       <span className={`px-2 py-1 rounded-full text-xs font-mono uppercase ${
                         scan.risk_level === 'safe' ? 'bg-green-500/10 text-green-400 border border-green-500/20' :
                         scan.risk_level === 'suspicious' ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20' :
@@ -476,7 +574,7 @@ const AdminDashboard = () => {
                   {admins.length === 0 ? (
                     <p className="text-muted-foreground text-center py-8">No admins found</p>
                   ) : (
-                    admins.map((admin, idx) => (
+                    admins.map((admin) => (
                       <div
                         key={admin.id}
                         className="flex items-center justify-between p-4 bg-accent/30 rounded-lg border border-border/50"
@@ -485,11 +583,9 @@ const AdminDashboard = () => {
                           <p className="font-semibold">{admin.name}</p>
                           <p className="text-sm text-muted-foreground">{admin.email}</p>
                         </div>
-                        <div className="flex items-center space-x-2">
-                          <span className="px-2 py-1 bg-primary/10 text-primary text-xs font-semibold rounded-full border border-primary/20">
-                            ADMIN
-                          </span>
-                        </div>
+                        <span className="px-2 py-1 bg-primary/10 text-primary text-xs font-semibold rounded-full border border-primary/20">
+                          ADMIN
+                        </span>
                       </div>
                     ))
                   )}
