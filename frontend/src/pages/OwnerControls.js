@@ -27,9 +27,11 @@ const OwnerControls = () => {
   const [filterActionType, setFilterActionType] = useState('');
 
   useEffect(() => {
-    if (user?.role === 'owner') {
-      fetchAuditLogs();
+    if (user?.role !== 'owner') {
+      navigate('/dashboard');
+      return;
     }
+    fetchAuditLogs();
   }, [user, filterActionType]);
 
   const fetchAuditLogs = async () => {
@@ -49,7 +51,6 @@ const OwnerControls = () => {
   };
 
   if (user?.role !== 'owner') {
-    navigate('/dashboard');
     return null;
   }
 
