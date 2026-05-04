@@ -1,0 +1,36 @@
+{
+  "summary": "E2E tested new scanner orchestrator with sensitivity parameter (low/normal/high/aggressive), graceful fallback for missing VT/urlscan keys, cache behavior, file type detection (pdf/exe), IOC extraction, and the updated Frontend Scan page (sensitivity picker) + ScanResult page (sensitivity badge, explanations, heuristic, cache-badge). All 12 pytest backend tests pass. Frontend Playwright flow (login -> /scan -> pick sensitivity -> submit URL -> /scan/:id result with badge & sections; also PDF file scan; regression to history/plans/dashboard) all pass without regressions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Scan page - Sensitivity picker", "issues": ["The helper text under the dropdown only shows the short description (e.g. 'Surface suspicious behaviour'); consider also displaying the selected level label ('High') for a11y and clarity. Minor - not blocking."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_scanner_sensitivity.py",
+    "/app/test_reports/pytest/pytest_results_iteration5.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is ~1100 lines - consider splitting into routers (auth, scans, admin, owner, billing) for maintainability. Not blocking but long-term tech debt.",
+    "scan/file endpoint accepts sensitivity as a query param while scan/url accepts it in JSON body - inconsistency in API design; frontend handles both correctly but consider harmonizing.",
+    "scan_url_full caches results keyed only by URL hash (not by sensitivity), so a cached low-sensitivity scan will be served even if user requests aggressive. The cached 'sensitivity' field will reflect the original request. Consider including sensitivity in cache_key or re-applying sensitivity multiplier on cache hit. This is a correctness concern.",
+    "Cached scan result returns the original from_cache=false value stored, and the orchestrator overwrites with from_cache=true, but the stored scan_doc in db.scans still has from_cache=false for first write - this is fine. Verified working end-to-end (second scan returned from_cache=true).",
+    "ScanResult heuristic-section is conditionally rendered only when findings exist - for tiny/empty PDFs it doesn't render. That's acceptable UX."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_scanner_sensitivity.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Used Owner: athulkrishna456727@gmail.com / #AThr401012# (enterprise plan)",
+  "seed_data_creation": "Created several URL scan docs (https://example.com/test-*, cache-*, iocs-test, pw-final-test) and file scan docs (test.pdf, test.exe) in MongoDB under the owner account. Credits deducted from owner (now ~999973).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Scanner orchestrator with sensitivity parameter is fully functional. VT_API_KEY and URLSCAN_API_KEY are NOT configured (expected) - fallback works and returns risk_score=0, engines_detected=0, with explanations list. URLhaus and MalwareBazaar are live. Frontend Scan.js SensitivityPicker and ScanResult.js rich display are both working. Note the cache key does not include sensitivity - if testing sensitivity variations on the same URL within 24h, expect from_cache=true on subsequent requests regardless of sensitivity change.",
+  "rca of the issue": "N/A - no blocking issues found."
+}

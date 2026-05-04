@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
-import { Shield, AlertTriangle, CheckCircle, Download, FileText, Copy } from 'lucide-react';
+import { Shield, AlertTriangle, Download, FileText, Copy, Gauge, Database, Info, Search } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { toast } from 'sonner';
 
@@ -79,6 +79,7 @@ const ScanResult = () => {
     if (level === 'critical') return 'text-red-500';
     if (level === 'high') return 'text-red-400';
     if (level === 'suspicious') return 'text-orange-400';
+    if (level === 'low') return 'text-yellow-400';
     if (level === 'safe') return 'text-green-400';
     return 'text-zinc-400';
   };
@@ -87,8 +88,16 @@ const ScanResult = () => {
     if (level === 'critical') return 'bg-red-500/10 border-red-500/30';
     if (level === 'high') return 'bg-red-400/10 border-red-400/30';
     if (level === 'suspicious') return 'bg-orange-400/10 border-orange-400/30';
+    if (level === 'low') return 'bg-yellow-400/10 border-yellow-400/30';
     if (level === 'safe') return 'bg-green-400/10 border-green-400/30';
     return 'bg-zinc-800 border-zinc-700';
+  };
+
+  const sensitivityColor = {
+    low: 'text-green-400 border-green-400/30 bg-green-400/5',
+    normal: 'text-primary border-primary/30 bg-primary/5',
+    high: 'text-orange-400 border-orange-400/30 bg-orange-400/5',
+    aggressive: 'text-red-400 border-red-400/30 bg-red-400/5',
   };
 
   if (loading) return <Layout><div className="flex items-center justify-center py-20"><p>Loading scan...</p></div></Layout>;
@@ -116,17 +125,86 @@ const ScanResult = () => {
             <p className="text-sm text-muted-foreground mb-1">Risk Score</p>
             <p className={`font-mono text-5xl font-bold ${getRiskColor(scan.risk_level)}`}>{scan.risk_score}</p>
             <p className={`text-lg font-semibold uppercase mt-1 ${getRiskColor(scan.risk_level)}`}>{scan.risk_level}</p>
+            {scan.sensitivity && (
+              <span
+                className={`inline-flex items-center gap-1 mt-3 px-2.5 py-0.5 text-xs font-mono uppercase border rounded-full ${sensitivityColor[scan.sensitivity] || ''}`}
+                data-testid="sensitivity-badge"
+              >
+                <Gauge className="h-3 w-3" /> {scan.sensitivity}
+              </span>
+            )}
           </div>
           <div className="col-span-2 bg-card border border-border rounded-xl p-6">
             <h3 className="font-semibold mb-3">Scan Details</h3>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div><span className="text-muted-foreground">Type:</span> <span className="font-mono uppercase">{scan.scan_type}</span></div>
               <div><span className="text-muted-foreground">Date:</span> <span className="font-mono">{new Date(scan.created_at).toLocaleString()}</span></div>
-              <div><span className="text-muted-foreground">Detections:</span> <span className="font-mono">{scan.malicious_detections}/{scan.total_engines} engines</span></div>
-              {scan.file_hash && <div><span className="text-muted-foreground">SHA256:</span> <span className="font-mono text-xs">{scan.file_hash?.slice(0, 16)}...</span></div>}
+              <div>
+                <span className="text-muted-foreground">Detections:</span>{' '}
+                <span className="font-mono">{scan.engines_detected ?? 0}/{scan.engines_total ?? 0} engines</span>
+              </div>
+              {scan.file_type_detected && (
+                <div><span className="text-muted-foreground">File Type:</span> <span className="font-mono uppercase">{scan.file_type_detected}</span></div>
+              )}
+              {scan.heuristic_score !== undefined && scan.scan_type === 'file' && (
+                <div><span className="text-muted-foreground">Heuristic:</span> <span className="font-mono">{scan.heuristic_score}/100</span></div>
+              )}
+              {scan.file_hash && <div className="col-span-2"><span className="text-muted-foreground">SHA256:</span> <span className="font-mono text-xs break-all">{scan.file_hash}</span></div>}
+              {scan.from_cache && (
+                <div className="col-span-2 flex items-center text-xs text-muted-foreground" data-testid="cache-badge">
+                  <Database className="h-3 w-3 mr-1.5 text-primary" /> Result served from 24h cache
+                </div>
+              )}
             </div>
           </div>
         </div>
+
+        {/* Explanations */}
+        {scan.explanations?.length > 0 && (
+          <div className="bg-card border border-border rounded-xl p-6 mb-6" data-testid="explanations-section">
+            <h3 className="font-heading text-xl font-semibold mb-4 flex items-center">
+              <Info className="h-5 w-5 text-primary mr-2" /> Analysis Summary
+            </h3>
+            <ul className="space-y-2">
+              {scan.explanations.map((exp, idx) => (
+                <li
+                  key={idx}
+                  className="flex items-start text-sm font-mono p-2.5 bg-black/30 border border-border/40 rounded-lg"
+                  data-testid={`explanation-${idx}`}
+                >
+                  <span className="text-primary mr-2.5 mt-0.5">▸</span>
+                  <span className="text-foreground/90">{exp}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Heuristic Findings (file scans) */}
+        {scan.heuristic_findings?.length > 0 && (
+          <div className="bg-card border border-border rounded-xl p-6 mb-6" data-testid="heuristic-section">
+            <h3 className="font-heading text-xl font-semibold mb-4 flex items-center">
+              <Search className="h-5 w-5 text-orange-400 mr-2" /> Local Heuristic Findings ({scan.heuristic_findings.length})
+            </h3>
+            <div className="space-y-2">
+              {scan.heuristic_findings.slice(0, 15).map((f, idx) => (
+                <div key={idx} className="flex items-start justify-between gap-3 p-3 bg-orange-400/5 border border-orange-400/10 rounded-lg">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-sm text-orange-300">{f.detail || f.description || JSON.stringify(f)}</p>
+                    {f.category && (
+                      <span className="inline-block mt-1 px-2 py-0.5 text-[10px] uppercase font-mono bg-orange-400/10 text-orange-300 rounded">
+                        {f.category}
+                      </span>
+                    )}
+                  </div>
+                  {f.score !== undefined && (
+                    <span className="font-mono text-xs text-orange-300/80 whitespace-nowrap">+{f.score}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Threats */}
         {scan.threats?.length > 0 && (

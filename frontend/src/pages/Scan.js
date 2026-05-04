@@ -2,15 +2,29 @@ import React, { useState, useCallback } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
-import { FileSearch, Upload, Link as LinkIcon, Loader2, AlertCircle } from 'lucide-react';
+import { FileSearch, Upload, Link as LinkIcon, Loader2, AlertCircle, Gauge } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Progress } from '../components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL + '/api';
+
+const SENSITIVITY_OPTIONS = [
+  { value: 'low',        label: 'Low',        desc: 'Only confirmed threats (90%+)',  color: 'text-green-400' },
+  { value: 'normal',     label: 'Normal',     desc: 'Balanced detection (default)',   color: 'text-primary'   },
+  { value: 'high',       label: 'High',       desc: 'Surface suspicious behaviour',   color: 'text-orange-400'},
+  { value: 'aggressive', label: 'Aggressive', desc: 'Flag every weak signal (10%+)',  color: 'text-red-400'   },
+];
 
 const Scan = () => {
   const { token, refreshUser } = useAuth();
@@ -19,32 +33,30 @@ const Scan = () => {
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [dragActive, setDragActive] = useState(false);
+  const [sensitivity, setSensitivity] = useState('normal');
   const navigate = useNavigate();
+
+  const startProgress = () => {
+    setProgress(0);
+    return setInterval(() => {
+      setProgress((prev) => (prev >= 90 ? prev : prev + 10));
+    }, 200);
+  };
 
   const handleUrlScan = async (e) => {
     e.preventDefault();
     if (!url) return;
-
     setScanning(true);
-    setProgress(0);
-
-    const progressInterval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 90) return prev;
-        return prev + 10;
-      });
-    }, 200);
+    const progressInterval = startProgress();
 
     try {
       const response = await axios.post(
         `${API_URL}/scan/url`,
-        { url },
+        { url, sensitivity },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-
       clearInterval(progressInterval);
       setProgress(100);
-
       setTimeout(() => {
         refreshUser();
         navigate(`/scan/${response.data.id}`);
@@ -63,31 +75,25 @@ const Scan = () => {
 
   const handleFileScan = async () => {
     if (!file) return;
-
     setScanning(true);
-    setProgress(0);
-
-    const progressInterval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 90) return prev;
-        return prev + 10;
-      });
-    }, 200);
+    const progressInterval = startProgress();
 
     try {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await axios.post(`${API_URL}/scan/file`, formData, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-
+      const response = await axios.post(
+        `${API_URL}/scan/file?sensitivity=${sensitivity}`,
+        formData,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'multipart/form-data',
+          },
+        }
+      );
       clearInterval(progressInterval);
       setProgress(100);
-
       setTimeout(() => {
         refreshUser();
         navigate(`/scan/${response.data.id}`);
@@ -118,7 +124,6 @@ const Scan = () => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       setFile(e.dataTransfer.files[0]);
     }
@@ -135,8 +140,45 @@ const Scan = () => {
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
   };
+
+  const currentSens = SENSITIVITY_OPTIONS.find((o) => o.value === sensitivity);
+
+  const SensitivityPicker = (
+    <div className="space-y-2" data-testid="sensitivity-picker">
+      <label className="block text-sm font-medium flex items-center">
+        <Gauge className="h-4 w-4 mr-2 text-primary" /> Detection Sensitivity
+      </label>
+      <Select value={sensitivity} onValueChange={setSensitivity} disabled={scanning}>
+        <SelectTrigger
+          className="bg-black/50 border-border/50 h-12 font-mono"
+          data-testid="sensitivity-select-trigger"
+        >
+          <SelectValue placeholder="Select sensitivity" />
+        </SelectTrigger>
+        <SelectContent data-testid="sensitivity-select-content">
+          {SENSITIVITY_OPTIONS.map((opt) => (
+            <SelectItem
+              key={opt.value}
+              value={opt.value}
+              data-testid={`sensitivity-option-${opt.value}`}
+            >
+              <div className="flex items-center justify-between w-full">
+                <span className={`font-semibold ${opt.color}`}>{opt.label}</span>
+                <span className="text-xs text-muted-foreground ml-3">{opt.desc}</span>
+              </div>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {currentSens && (
+        <p className={`text-xs font-mono ${currentSens.color}`} data-testid="sensitivity-current">
+          {currentSens.desc}
+        </p>
+      )}
+    </div>
+  );
 
   return (
     <Layout>
@@ -178,6 +220,8 @@ const Scan = () => {
                     URL scan costs 5 credits (Free) or 3 credits (Premium)
                   </p>
                 </div>
+
+                {SensitivityPicker}
 
                 {scanning && (
                   <div className="space-y-2">
@@ -265,6 +309,8 @@ const Scan = () => {
                   <AlertCircle className="h-4 w-4 mr-2" />
                   File scan costs 10 credits (Free) or 6 credits (Premium)
                 </p>
+
+                {SensitivityPicker}
 
                 {scanning && (
                   <div className="space-y-2">
