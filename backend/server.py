@@ -20,11 +20,7 @@ from datetime import datetime, timezone, timedelta
 from cryptography.fernet import Fernet
 import base64
 
-from services import (
-    scan_url_virustotal, scan_url_urlscan, scan_url_urlhaus,
-    scan_file_virustotal, scan_file_malwarebazaar,
-    compute_risk_score, extract_iocs_from_results
-)
+from services.scanners import scan_url_full, scan_file_full, extract_url_iocs, extract_file_iocs
 from services.queue import enqueue_scan, dequeue_scan, update_scan_status, get_queue_position, get_queue_stats
 from services.reports import generate_scan_pdf, generate_summary_pdf, send_report_email
 from services.webhooks import trigger_webhooks
@@ -115,6 +111,7 @@ class User(BaseModel):
 
 class ScanURLRequest(BaseModel):
     url: str
+    sensitivity: str = "normal"  # low, normal, high, aggressive
 
 class UpdatePlanRequest(BaseModel):
     plan: str
@@ -291,37 +288,36 @@ async def scan_url(data: ScanURLRequest, user: User = Depends(get_current_user))
     if user_doc["credits"] < cost:
         raise HTTPException(status_code=402, detail="Insufficient credits")
 
+    sensitivity = data.sensitivity if data.sensitivity in ("low", "normal", "high", "aggressive") else "normal"
     scan_id = str(uuid.uuid4())
     await db.users.update_one({"id": user.id}, {"$inc": {"credits": -cost}})
-
-    # Enqueue with priority
     await enqueue_scan(user.id, "url", data.url, user.plan, scan_id)
-
-    # Execute scan (real API calls)
     await update_scan_status(scan_id, "processing")
-    results = []
-    results.append(await scan_url_urlhaus(data.url))
-    results.append(await scan_url_virustotal(data.url))
-    # urlscan takes long, run only for premium+
-    if user.plan in ("premium", "enterprise"):
-        results.append(await scan_url_urlscan(data.url))
 
-    risk_data = compute_risk_score(results)
-    iocs = extract_iocs_from_results(results, data.url, "url")
+    # Run full scan with all engines
+    scan_result = await scan_url_full(data.url, sensitivity, db, user.plan)
 
     scan_doc = {
         "id": scan_id, "user_id": user.id, "scan_type": "url",
         "target": data.url, "status": "completed",
-        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
-        "malicious_detections": risk_data["malicious_detections"],
-        "total_engines": risk_data["total_engines"],
-        "threats": risk_data["threats"],
-        "raw_results": results,
+        "sensitivity": sensitivity,
+        "risk_score": scan_result["risk_score"],
+        "risk_level": scan_result["risk_level"],
+        "explanations": scan_result["explanations"],
+        "detections": scan_result["detections"],
+        "engines_detected": scan_result["engines_detected"],
+        "engines_total": scan_result["engines_total"],
+        "urlhaus_detected": scan_result["urlhaus_detected"],
+        "urlscan_malicious": scan_result.get("urlscan_malicious", False),
+        "threats": scan_result["detections"],
+        "raw_results": scan_result.get("api_results_raw", []),
+        "from_cache": scan_result.get("from_cache", False),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.scans.insert_one(scan_doc)
 
     # Store IOCs
+    iocs = scan_result.get("iocs", [])
     if iocs:
         ioc_docs = [{"scan_id": scan_id, "ioc_type": i["ioc_type"], "value": i["value"], "confidence": i["confidence"], "created_at": datetime.now(timezone.utc).isoformat()} for i in iocs]
         await db.iocs.insert_many(ioc_docs)
@@ -331,24 +327,26 @@ async def scan_url(data: ScanURLRequest, user: User = Depends(get_current_user))
     # Trigger webhooks for enterprise
     if user.plan == "enterprise":
         await trigger_webhooks(user.id, "scan.completed", {
-            "scan_id": scan_id, "target": data.url, "risk_score": risk_data["risk_score"],
-            "risk_level": risk_data["risk_level"]
+            "scan_id": scan_id, "target": data.url,
+            "risk_score": scan_result["risk_score"], "risk_level": scan_result["risk_level"]
         }, db)
 
-    scan_doc.pop("_id", None)
-    scan_doc.pop("raw_results", None)
-    scan_doc["iocs"] = iocs
-    scan_doc["credits_used"] = cost
-    scan_doc["credits_remaining"] = user_doc["credits"] - cost
-    return scan_doc
+    response = {k: v for k, v in scan_doc.items() if k not in ("_id", "raw_results")}
+    response["iocs"] = iocs
+    response["credits_used"] = cost
+    response["credits_remaining"] = user_doc["credits"] - cost
+    return response
 
 
 @api_router.post("/scan/file")
-async def scan_file(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+async def scan_file(file: UploadFile = File(...), sensitivity: str = "normal", user: User = Depends(get_current_user)):
     cost = SCAN_COSTS["file"].get(user.plan, 10)
     user_doc = await db.users.find_one({"id": user.id})
     if user_doc["credits"] < cost:
         raise HTTPException(status_code=402, detail="Insufficient credits")
+
+    if sensitivity not in ("low", "normal", "high", "aggressive"):
+        sensitivity = "normal"
 
     file_bytes = await file.read()
     file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -358,28 +356,32 @@ async def scan_file(file: UploadFile = File(...), user: User = Depends(get_curre
     await enqueue_scan(user.id, "file", file.filename, user.plan, scan_id)
     await update_scan_status(scan_id, "processing")
 
-    results = []
-    results.append(await scan_file_virustotal(file_bytes, file.filename))
-    results.append(await scan_file_malwarebazaar(file_hash))
-
-    risk_data = compute_risk_score(results)
-    iocs = extract_iocs_from_results(results, file.filename, "file")
-    # Add file hash as IOC
-    iocs.append({"ioc_type": "sha256", "value": file_hash, "confidence": 100})
+    # Run full file scan with heuristics + APIs
+    scan_result = await scan_file_full(file_bytes, file.filename, sensitivity, db, user.plan)
 
     scan_doc = {
         "id": scan_id, "user_id": user.id, "scan_type": "file",
         "target": file.filename, "status": "completed",
-        "file_hash": file_hash, "file_size": len(file_bytes),
-        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
-        "malicious_detections": risk_data["malicious_detections"],
-        "total_engines": risk_data["total_engines"],
-        "threats": risk_data["threats"],
-        "raw_results": results,
+        "sensitivity": sensitivity,
+        "file_hash": file_hash,
+        "file_size": len(file_bytes),
+        "file_type_detected": scan_result.get("file_type_detected", "unknown"),
+        "risk_score": scan_result["risk_score"],
+        "risk_level": scan_result["risk_level"],
+        "explanations": scan_result["explanations"],
+        "detections": scan_result.get("detections", []),
+        "engines_detected": scan_result.get("engines_detected", 0),
+        "engines_total": scan_result.get("engines_total", 0),
+        "heuristic_score": scan_result.get("heuristic_result", {}).get("heuristic_score", 0),
+        "heuristic_findings": scan_result.get("heuristic_result", {}).get("findings", []),
+        "threats": scan_result.get("detections", []),
+        "raw_results": scan_result.get("api_results_raw", []),
+        "from_cache": scan_result.get("from_cache", False),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.scans.insert_one(scan_doc)
 
+    iocs = scan_result.get("iocs", [])
     if iocs:
         ioc_docs = [{"scan_id": scan_id, "ioc_type": i["ioc_type"], "value": i["value"], "confidence": i["confidence"], "created_at": datetime.now(timezone.utc).isoformat()} for i in iocs]
         await db.iocs.insert_many(ioc_docs)
@@ -388,16 +390,16 @@ async def scan_file(file: UploadFile = File(...), user: User = Depends(get_curre
 
     if user.plan == "enterprise":
         await trigger_webhooks(user.id, "scan.completed", {
-            "scan_id": scan_id, "target": file.filename, "risk_score": risk_data["risk_score"],
-            "risk_level": risk_data["risk_level"], "file_hash": file_hash
+            "scan_id": scan_id, "target": file.filename,
+            "risk_score": scan_result["risk_score"], "risk_level": scan_result["risk_level"],
+            "file_hash": file_hash
         }, db)
 
-    scan_doc.pop("_id", None)
-    scan_doc.pop("raw_results", None)
-    scan_doc["iocs"] = iocs
-    scan_doc["credits_used"] = cost
-    scan_doc["credits_remaining"] = user_doc["credits"] - cost
-    return scan_doc
+    response = {k: v for k, v in scan_doc.items() if k not in ("_id", "raw_results")}
+    response["iocs"] = iocs
+    response["credits_used"] = cost
+    response["credits_remaining"] = user_doc["credits"] - cost
+    return response
 
 
 @api_router.get("/scan/{scan_id}")
@@ -503,43 +505,38 @@ async def api_scan_url(data: ScanURLRequest, user: User = Depends(get_user_by_ap
     if user_doc["credits"] < cost:
         raise HTTPException(status_code=402, detail="Insufficient credits")
 
+    sensitivity = data.sensitivity if data.sensitivity in ("low", "normal", "high", "aggressive") else "normal"
     scan_id = str(uuid.uuid4())
     await db.users.update_one({"id": user.id}, {"$inc": {"credits": -cost}})
     await update_scan_status(scan_id, "processing")
 
-    results = []
-    results.append(await scan_url_urlhaus(data.url))
-    results.append(await scan_url_virustotal(data.url))
-    if user.plan in ("premium", "enterprise"):
-        results.append(await scan_url_urlscan(data.url))
-
-    risk_data = compute_risk_score(results)
-    iocs = extract_iocs_from_results(results, data.url, "url")
+    scan_result = await scan_url_full(data.url, sensitivity, db, user.plan)
 
     scan_doc = {
         "id": scan_id, "user_id": user.id, "scan_type": "url",
-        "target": data.url, "status": "completed",
-        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
-        "malicious_detections": risk_data["malicious_detections"],
-        "total_engines": risk_data["total_engines"],
-        "threats": risk_data["threats"],
-        "raw_results": results,
+        "target": data.url, "status": "completed", "sensitivity": sensitivity,
+        "risk_score": scan_result["risk_score"], "risk_level": scan_result["risk_level"],
+        "explanations": scan_result["explanations"],
+        "detections": scan_result["detections"],
+        "engines_detected": scan_result["engines_detected"],
+        "engines_total": scan_result["engines_total"],
+        "threats": scan_result["detections"],
+        "raw_results": scan_result.get("api_results_raw", []),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.scans.insert_one(scan_doc)
 
+    iocs = scan_result.get("iocs", [])
     if iocs:
         ioc_docs = [{"scan_id": scan_id, "ioc_type": i["ioc_type"], "value": i["value"], "confidence": i["confidence"], "created_at": datetime.now(timezone.utc).isoformat()} for i in iocs]
         await db.iocs.insert_many(ioc_docs)
 
     await update_scan_status(scan_id, "completed")
-
     return {
         "scan_id": scan_id, "target": data.url,
-        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
-        "malicious_detections": risk_data["malicious_detections"],
-        "total_engines": risk_data["total_engines"],
-        "threats": risk_data["threats"], "iocs": iocs
+        "risk_score": scan_result["risk_score"], "risk_level": scan_result["risk_level"],
+        "explanations": scan_result["explanations"],
+        "detections": scan_result["detections"][:10], "iocs": iocs
     }
 
 
