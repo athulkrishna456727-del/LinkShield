@@ -16,32 +16,20 @@ import Plans from './pages/Plans';
 import AdminDashboard from './pages/AdminDashboard';
 import AccountSettings from './pages/AccountSettings';
 import OwnerControls from './pages/OwnerControls';
+import ApiKeys from './pages/ApiKeys';
+import Teams from './pages/Teams';
+import Webhooks from './pages/Webhooks';
+import Reports from './pages/Reports';
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <p className="text-muted-foreground">Loading...</p>
-      </div>
-    );
-  }
-
+  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><p className="text-muted-foreground">Loading...</p></div>;
   return user ? children : <Navigate to="/login" />;
 };
 
 const PublicRoute = ({ children }) => {
   const { user, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <p className="text-muted-foreground">Loading...</p>
-      </div>
-    );
-  }
-
+  if (loading) return <div className="min-h-screen bg-background flex items-center justify-center"><p className="text-muted-foreground">Loading...</p></div>;
   return !user ? children : <Navigate to="/dashboard" />;
 };
 
@@ -63,6 +51,10 @@ function App() {
           <Route path="/admin" element={<PrivateRoute><AdminDashboard /></PrivateRoute>} />
           <Route path="/settings" element={<PrivateRoute><AccountSettings /></PrivateRoute>} />
           <Route path="/owner" element={<PrivateRoute><OwnerControls /></PrivateRoute>} />
+          <Route path="/api-keys" element={<PrivateRoute><ApiKeys /></PrivateRoute>} />
+          <Route path="/teams" element={<PrivateRoute><Teams /></PrivateRoute>} />
+          <Route path="/webhooks" element={<PrivateRoute><Webhooks /></PrivateRoute>} />
+          <Route path="/reports" element={<PrivateRoute><Reports /></PrivateRoute>} />
         </Routes>
         <Toaster position="top-right" />
       </BrowserRouter>

@@ -1,5 +1,6 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, status, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,132 +10,86 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional
 import uuid
-from datetime import datetime, timezone, timedelta
+import secrets
+import hashlib
+import re
 import bcrypt
 import jwt
-import hashlib
-import random
-import re
-import razorpay
 import hmac
+from datetime import datetime, timezone, timedelta
 from cryptography.fernet import Fernet
 import base64
 
-def validate_username(username: str) -> bool:
-    """Validate username format: letters, numbers, underscore only"""
-    return bool(re.match(r'^[a-zA-Z0-9_]{3,20}$', username))
-
-async def create_audit_log(action_type: str, performed_by: str, target_user: str = None, details: str = ""):
-    """Create comprehensive audit log"""
-    log_entry = {
-        "id": str(uuid.uuid4()),
-        "action_type": action_type,
-        "performed_by": performed_by,
-        "target_user": target_user,
-        "details": details,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    await db.audit_logs.insert_one(log_entry)
+from services import (
+    scan_url_virustotal, scan_url_urlscan, scan_url_urlhaus,
+    scan_file_virustotal, scan_file_malwarebazaar,
+    compute_risk_score, extract_iocs_from_results
+)
+from services.queue import enqueue_scan, dequeue_scan, update_scan_status, get_queue_position, get_queue_stats
+from services.reports import generate_scan_pdf, generate_summary_pdf, send_report_email
+from services.webhooks import trigger_webhooks
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-app = FastAPI()
+# App setup
+app = FastAPI(title="Link Shield API")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 
+# DB
+MONGO_URL = os.environ.get('MONGO_URL')
+DB_NAME = os.environ.get('DB_NAME')
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+# Auth
 JWT_SECRET = os.environ.get('JWT_SECRET', 'link-shield-secret-key-change-in-production')
 JWT_ALGORITHM = 'HS256'
 
-# Encryption key derived from JWT_SECRET for payment key storage
+# Encryption for secrets
 _fernet_key = base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET.encode()).digest())
 fernet = Fernet(_fernet_key)
 
-def encrypt_value(value: str) -> str:
-    return fernet.encrypt(value.encode()).decode()
-
-def decrypt_value(encrypted: str) -> str:
-    return fernet.decrypt(encrypted.encode()).decode()
-
-def mask_key(value: str) -> str:
-    if len(value) <= 8:
-        return "****"
-    return value[:4] + "*" * (len(value) - 8) + value[-4:]
-
-# Default Razorpay keys from env (fallback)
-DEFAULT_RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', 'rzp_test_demo_key')
-DEFAULT_RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', 'rzp_test_demo_secret')
-
-async def get_payment_gateway_config():
-    """Load payment gateway config from DB, fallback to env vars"""
-    settings = await db.payment_settings.find_one({"_id": "razorpay"})
-    if settings and settings.get("key_id") and settings.get("key_secret_encrypted"):
-        try:
-            return {
-                "gateway": "razorpay",
-                "key_id": settings["key_id"],
-                "key_secret": decrypt_value(settings["key_secret_encrypted"]),
-                "is_active": settings.get("is_active", True)
-            }
-        except Exception:
-            pass
-    return {
-        "gateway": "razorpay",
-        "key_id": DEFAULT_RAZORPAY_KEY_ID,
-        "key_secret": DEFAULT_RAZORPAY_KEY_SECRET,
-        "is_active": True
-    }
-
-def create_razorpay_client(key_id: str, key_secret: str):
-    return razorpay.Client(auth=(key_id, key_secret))
-
-PLAN_PRICES = {
-    'free': 0,
-    'premium': 499,
-    'enterprise': 2499
+# Plan configuration
+PLAN_CONFIG = {
+    "free": {"credits_per_month": 50, "priority": 3, "api_calls_per_day": 0, "max_team_members": 0, "webhooks": False, "reports": False, "ioc_export": False},
+    "premium": {"credits_per_month": 500, "priority": 2, "api_calls_per_day": 1000, "max_team_members": 0, "webhooks": False, "reports": True, "ioc_export": True},
+    "enterprise": {"credits_per_month": 999999, "priority": 1, "api_calls_per_day": 10000, "max_team_members": 50, "webhooks": True, "reports": True, "ioc_export": True}
 }
 
-PLAN_FEATURES = {
-    'free': {
-        'credits_per_month': 50,
-        'max_file_size': 10 * 1024 * 1024,
-        'features': ['50 credits per month', 'Basic scans', 'Limited file size (10MB)', 'Basic reports']
-    },
-    'premium': {
-        'credits_per_month': 500,
-        'max_file_size': 100 * 1024 * 1024,
-        'features': [
-            '500 credits per month',
-            'Advanced threat analysis',
-            'IOC extraction',
-            'Priority scan queue',
-            'Full scan history',
-            'PDF reports',
-            'Alerts and monitoring',
-            'Basic API access'
-        ]
-    },
-    'enterprise': {
-        'credits_per_month': 999999,
-        'max_file_size': 500 * 1024 * 1024,
-        'features': [
-            'Unlimited scans (fair usage)',
-            'Large file uploads (500MB)',
-            'Team workspace',
-            'Advanced analytics',
-            'Custom reports',
-            'High API limits',
-            'Dedicated priority queue'
-        ]
-    }
-}
+SCAN_COSTS = {"url": {"free": 5, "premium": 3, "enterprise": 1}, "file": {"free": 10, "premium": 6, "enterprise": 2}}
 
-SUSPICIOUS_KEYWORDS = ['phishing', 'malware', 'virus', 'hack', 'exploit', 'trojan', 'ransomware', 'suspicious', 'fake', 'scam']
-SUSPICIOUS_EXTENSIONS = ['.exe', '.bat', '.cmd', '.scr', '.vbs', '.js', '.jar', '.apk']
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# ---------- HELPERS ----------
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+def create_token(user_id: str, email: str, role: str) -> str:
+    return jwt.encode({"user_id": user_id, "email": email, "role": role, "exp": datetime.now(timezone.utc) + timedelta(days=7)}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def encrypt_value(val: str) -> str:
+    return fernet.encrypt(val.encode()).decode()
+
+def decrypt_value(val: str) -> str:
+    return fernet.decrypt(val.encode()).decode()
+
+def mask_key(val: str) -> str:
+    if len(val) <= 8: return "****"
+    return val[:4] + "*" * (len(val) - 8) + val[-4:]
+
+def generate_api_key() -> str:
+    return f"ls_{secrets.token_hex(32)}"
+
+
+# ---------- MODELS ----------
 
 class UserSignup(BaseModel):
     email: EmailStr
@@ -155,39 +110,42 @@ class User(BaseModel):
     role: str = "user"
     plan: str = "free"
     credits: int = 50
+    api_key: Optional[str] = None
     created_at: str
 
-class ChangeEmail(BaseModel):
-    current_password: str
-    new_email: EmailStr
+class ScanURLRequest(BaseModel):
+    url: str
 
-class ChangePassword(BaseModel):
-    current_password: str
-    new_password: str
+class UpdatePlanRequest(BaseModel):
+    plan: str
 
-class ChangeUsername(BaseModel):
-    username: str
+class UpdateRoleRequest(BaseModel):
+    role: str
 
-class CreateAdmin(BaseModel):
+class CreditAdjust(BaseModel):
+    amount: int
+    reason: str = ""
+
+class CreateAdminRequest(BaseModel):
     email: EmailStr
     name: str
     temporary_password: str
 
-class UpdateUserStatus(BaseModel):
-    status: str
+class WebhookCreate(BaseModel):
+    url: str
+    events: List[str]
+    secret: Optional[str] = None
 
-class ResetUserPassword(BaseModel):
-    new_password: str
+class TeamCreate(BaseModel):
+    name: str
 
-class SystemSettings(BaseModel):
-    maintenance_mode: bool = False
-    scan_url_cost_free: int = 5
-    scan_url_cost_premium: int = 3
-    scan_file_cost_free: int = 10
-    scan_file_cost_premium: int = 6
-    max_file_size_free: int = 10485760
-    max_file_size_premium: int = 104857600
-    max_file_size_enterprise: int = 524288000
+class TeamMemberAdd(BaseModel):
+    email: str
+    role: str = "member"
+
+class ReportScheduleCreate(BaseModel):
+    frequency: str  # daily, weekly, monthly
+    format: str = "pdf"
 
 class PaymentSettingsUpdate(BaseModel):
     gateway: str = "razorpay"
@@ -195,81 +153,17 @@ class PaymentSettingsUpdate(BaseModel):
     key_secret: str
     is_active: bool = True
 
-class URLScanRequest(BaseModel):
-    url: str
+class PriceUpdate(BaseModel):
+    premium_price: int
+    enterprise_price: int
 
-class ScanResult(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    user_id: str
-    scan_type: str
-    target: str
-    status: str
-    risk_score: int
-    risk_level: str
-    metadata: dict
-    iocs: dict
-    summary: str
-    created_at: str
 
-class UpdateUserCredits(BaseModel):
-    credits: int
+# ---------- AUTH MIDDLEWARE ----------
 
-class UpdateUserPlan(BaseModel):
-    plan: str
-
-class UpdateUserRole(BaseModel):
-    role: str
-
-class AddCredits(BaseModel):
-    amount: int
-    reason: str
-
-class DeductCredits(BaseModel):
-    amount: int
-    reason: str
-
-class UpgradePlan(BaseModel):
-    plan: str
-
-class CreateOrderRequest(BaseModel):
-    plan: str
-
-class VerifyPaymentRequest(BaseModel):
-    razorpay_order_id: str
-    razorpay_payment_id: str
-    razorpay_signature: str
-    plan: str
-
-class Notification(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    user_id: str
-    type: str
-    message: str
-    read: bool
-    created_at: str
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-def create_token(user_id: str, email: str, role: str) -> str:
-    payload = {
-        'user_id': user_id,
-        'email': email,
-        'role': role,
-        'exp': datetime.now(timezone.utc) + timedelta(days=7)
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
     try:
-        token = credentials.credentials
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         return User(**user)
@@ -278,1287 +172,901 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-async def get_admin_user(user: User = Depends(get_current_user)):
-    if user.role not in ["admin", "owner"]:
+async def get_admin_user(user: User = Depends(get_current_user)) -> User:
+    if user.role not in ("admin", "owner"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
-async def get_owner_user(user: User = Depends(get_current_user)):
+async def get_owner_user(user: User = Depends(get_current_user)) -> User:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     return user
 
-async def create_notification(user_id: str, notification_type: str, message: str):
-    notification = {
+def require_plan(min_plan: str):
+    """Dependency factory for plan-gating"""
+    plan_order = {"free": 0, "premium": 1, "enterprise": 2}
+    async def checker(user: User = Depends(get_current_user)):
+        if plan_order.get(user.plan, 0) < plan_order.get(min_plan, 0):
+            raise HTTPException(status_code=403, detail=f"This feature requires {min_plan} plan or above")
+        return user
+    return checker
+
+async def get_user_by_api_key(request: Request) -> User:
+    """Auth via API key header"""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    user = await db.users.find_one({"api_key": api_key}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    # Check rate limit
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if user.get("api_call_reset") != today:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"api_call_count": 0, "api_call_reset": today}})
+        user["api_call_count"] = 0
+    plan_config = PLAN_CONFIG.get(user.get("plan", "free"), PLAN_CONFIG["free"])
+    max_calls = plan_config["api_calls_per_day"]
+    if max_calls == 0:
+        raise HTTPException(status_code=403, detail="API access requires Premium or Enterprise plan")
+    if user.get("api_call_count", 0) >= max_calls:
+        raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({max_calls} calls/day)")
+    await db.users.update_one({"id": user["id"]}, {"$inc": {"api_call_count": 1}})
+    return User(**user)
+
+
+# ---------- AUDIT ----------
+
+async def create_audit_log(action_type: str, performed_by: str, target_user: str = None, details: str = ""):
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action_type": action_type,
+        "performed_by": performed_by,
+        "target_user": target_user,
+        "details": details,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+async def create_notification(user_id: str, notif_type: str, message: str):
+    await db.notifications.insert_one({
         "id": str(uuid.uuid4()),
         "user_id": user_id,
-        "type": notification_type,
+        "type": notif_type,
         "message": message,
         "read": False,
         "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.notifications.insert_one(notification)
+    })
 
-def analyze_url(url: str) -> dict:
-    risk_score = 0
-    threats = []
-    
-    url_lower = url.lower()
-    for keyword in SUSPICIOUS_KEYWORDS:
-        if keyword in url_lower:
-            risk_score += 15
-            threats.append(f"Suspicious keyword detected: {keyword}")
-    
-    if not url.startswith('https://'):
-        risk_score += 10
-        threats.append("Non-HTTPS connection")
-    
-    if len(url) > 100:
-        risk_score += 5
-        threats.append("Unusually long URL")
-    
-    if url.count('-') > 3 or url.count('.') > 4:
-        risk_score += 10
-        threats.append("Suspicious URL structure")
-    
-    risk_score = min(risk_score + random.randint(-10, 20), 100)
-    
-    if risk_score < 40:
-        risk_level = "safe"
-        summary = "No significant threats detected. URL appears to be safe."
-    elif risk_score < 70:
-        risk_level = "suspicious"
-        summary = f"Potentially unsafe content detected. Threats: {', '.join(threats) if threats else 'Suspicious patterns found'}."
-    else:
-        risk_level = "malicious"
-        summary = f"Dangerous threats detected. Threats: {', '.join(threats) if threats else 'High-risk patterns identified'}. Do not proceed."
-    
-    return {
-        "risk_score": risk_score,
-        "risk_level": risk_level,
-        "summary": summary,
-        "threats": threats
-    }
 
-def analyze_file(filename: str, content: bytes) -> dict:
-    risk_score = 0
-    threats = []
-    
-    file_ext = Path(filename).suffix.lower()
-    if file_ext in SUSPICIOUS_EXTENSIONS:
-        risk_score += 30
-        threats.append(f"Suspicious file extension: {file_ext}")
-    
-    if len(content) > 10 * 1024 * 1024:
-        risk_score += 10
-        threats.append("Large file size")
-    
-    filename_lower = filename.lower()
-    for keyword in SUSPICIOUS_KEYWORDS:
-        if keyword in filename_lower:
-            risk_score += 15
-            threats.append(f"Suspicious keyword in filename: {keyword}")
-    
-    risk_score = min(risk_score + random.randint(-10, 20), 100)
-    
-    if risk_score < 40:
-        risk_level = "safe"
-        summary = "File appears to be safe. No malicious patterns detected."
-    elif risk_score < 70:
-        risk_level = "suspicious"
-        summary = f"File may contain suspicious content. Threats: {', '.join(threats) if threats else 'Suspicious patterns found'}."
-    else:
-        risk_level = "malicious"
-        summary = f"File contains dangerous content. Threats: {', '.join(threats) if threats else 'High-risk patterns identified'}. Do not execute."
-    
-    return {
-        "risk_score": risk_score,
-        "risk_level": risk_level,
-        "summary": summary,
-        "threats": threats
-    }
+# ==================== AUTH ROUTES ====================
 
 @api_router.post("/auth/signup")
 async def signup(data: UserSignup):
-    # Validate username
-    if not validate_username(data.username):
-        raise HTTPException(
-            status_code=400,
-            detail="Username must be 3-20 characters and contain only letters, numbers, and underscores"
-        )
-    
-    # Check for existing email or username
-    existing_email = await db.users.find_one({"email": data.email})
-    if existing_email:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    existing_username = await db.users.find_one({"username": data.username})
-    if existing_username:
+    if len(data.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not re.match(r'^[a-z0-9_]{3,20}$', data.username):
+        raise HTTPException(status_code=400, detail="Username: 3-20 chars, lowercase letters, numbers, underscore only")
+    existing = await db.users.find_one({"$or": [{"email": data.email}, {"username": data.username}]})
+    if existing:
+        if existing.get("email") == data.email:
+            raise HTTPException(status_code=400, detail="Email already registered")
         raise HTTPException(status_code=400, detail="Username already taken")
-    
+
     user_id = str(uuid.uuid4())
-    
     user_doc = {
-        "id": user_id,
-        "email": data.email,
-        "username": data.username,
-        "password_hash": hash_password(data.password),
-        "name": data.name,
-        "role": "user",
-        "plan": "free",
-        "credits": 50,
-        "email_verified": True,
-        "status": "active",
+        "id": user_id, "email": data.email, "username": data.username,
+        "name": data.name, "password_hash": hash_password(data.password),
+        "role": "user", "plan": "free", "credits": 50,
+        "api_key": None, "api_call_count": 0, "api_call_reset": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
     await db.users.insert_one(user_doc)
-    
-    await create_audit_log(
-        action_type="user_signup",
-        performed_by=user_id,
-        details=f"New user signup: {data.email} (@{data.username})"
-    )
-    
     token = create_token(user_id, data.email, "user")
-    user_response = {k: v for k, v in user_doc.items() if k not in ["password_hash", "_id", "otp_code"]}
-    
-    return {"token": token, "user": user_response}
+    user_doc.pop("password_hash")
+    user_doc.pop("_id", None)
+    return {"token": token, "user": user_doc}
+
 
 @api_router.post("/auth/login")
 async def login(data: UserLogin):
     user = await db.users.find_one({"email": data.email})
     if not user or not verify_password(data.password, user['password_hash']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
     token = create_token(user['id'], user['email'], user['role'])
-    user_response = {k: v for k, v in user.items() if k not in ["password_hash", "_id", "otp_code"]}
-    
-    await create_audit_log(
-        action_type="user_login",
-        performed_by=user['id'],
-        details=f"User login: {data.email}"
-    )
-    
+    user_response = {k: v for k, v in user.items() if k not in ("password_hash", "_id")}
     return {"token": token, "user": user_response}
+
 
 @api_router.get("/auth/me")
 async def get_me(user: User = Depends(get_current_user)):
-    fresh_user = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 0})
-    return fresh_user
+    user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 0})
+    return user_doc
 
-@api_router.put("/account/email")
-async def change_email(data: ChangeEmail, user: User = Depends(get_current_user)):
-    user_doc = await db.users.find_one({"id": user.id})
-    if not verify_password(data.current_password, user_doc['password_hash']):
-        raise HTTPException(status_code=401, detail="Current password is incorrect")
-    
-    existing = await db.users.find_one({"email": data.new_email})
-    if existing and existing['id'] != user.id:
-        raise HTTPException(status_code=400, detail="Email already in use")
-    
-    await db.users.update_one({"id": user.id}, {"$set": {"email": data.new_email}})
-    return {"message": "Email updated successfully"}
 
-@api_router.put("/account/password")
-async def change_password(data: ChangePassword, user: User = Depends(get_current_user)):
-    user_doc = await db.users.find_one({"id": user.id})
-    if not verify_password(data.current_password, user_doc['password_hash']):
-        raise HTTPException(status_code=401, detail="Current password is incorrect")
-    
-    new_hash = hash_password(data.new_password)
-    await db.users.update_one({"id": user.id}, {"$set": {"password_hash": new_hash}})
-    
-    await create_audit_log(
-        action_type="password_changed",
-        performed_by=user.id,
-        details="User changed password"
-    )
-    
-    return {"message": "Password updated successfully"}
-
-@api_router.put("/account/username")
-async def change_username(data: ChangeUsername, user: User = Depends(get_current_user)):
-    if not validate_username(data.username):
-        raise HTTPException(
-            status_code=400,
-            detail="Username must be 3-20 characters and contain only letters, numbers, and underscores"
-        )
-    
-    existing = await db.users.find_one({"username": data.username})
-    if existing and existing['id'] != user.id:
-        raise HTTPException(status_code=400, detail="Username already taken")
-    
-    await db.users.update_one({"id": user.id}, {"$set": {"username": data.username}})
-    
-    await create_audit_log(
-        action_type="username_changed",
-        performed_by=user.id,
-        details=f"Username changed to @{data.username}"
-    )
-    
-    return {"message": "Username updated successfully"}
+# ==================== SCANNING ROUTES ====================
 
 @api_router.post("/scan/url")
-async def scan_url(data: URLScanRequest, user: User = Depends(get_current_user)):
-    fresh_user = await db.users.find_one({"id": user.id})
-    
-    if fresh_user['plan'] == 'enterprise':
-        cost = 0
-    elif fresh_user['plan'] == 'premium':
-        cost = 3
-    else:
-        cost = 5
-    
-    if cost > 0 and fresh_user['credits'] < cost:
+async def scan_url(data: ScanURLRequest, user: User = Depends(get_current_user)):
+    cost = SCAN_COSTS["url"].get(user.plan, 5)
+    user_doc = await db.users.find_one({"id": user.id})
+    if user_doc["credits"] < cost:
         raise HTTPException(status_code=402, detail="Insufficient credits")
-    
+
     scan_id = str(uuid.uuid4())
+    await db.users.update_one({"id": user.id}, {"$inc": {"credits": -cost}})
+
+    # Enqueue with priority
+    await enqueue_scan(user.id, "url", data.url, user.plan, scan_id)
+
+    # Execute scan (real API calls)
+    await update_scan_status(scan_id, "processing")
+    results = []
+    results.append(await scan_url_urlhaus(data.url))
+    results.append(await scan_url_virustotal(data.url))
+    # urlscan takes long, run only for premium+
+    if user.plan in ("premium", "enterprise"):
+        results.append(await scan_url_urlscan(data.url))
+
+    risk_data = compute_risk_score(results)
+    iocs = extract_iocs_from_results(results, data.url, "url")
+
     scan_doc = {
-        "id": scan_id,
-        "user_id": user.id,
-        "scan_type": "url",
-        "target": data.url,
-        "status": "queued",
-        "risk_score": 0,
-        "risk_level": "unknown",
-        "metadata": {},
-        "iocs": {},
-        "summary": "",
+        "id": scan_id, "user_id": user.id, "scan_type": "url",
+        "target": data.url, "status": "completed",
+        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
+        "malicious_detections": risk_data["malicious_detections"],
+        "total_engines": risk_data["total_engines"],
+        "threats": risk_data["threats"],
+        "raw_results": results,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.scans.insert_one(scan_doc)
-    
-    analysis = analyze_url(data.url)
-    
-    scan_doc.update({
-        "status": "completed",
-        "risk_score": analysis['risk_score'],
-        "risk_level": analysis['risk_level'],
-        "summary": analysis['summary'],
-        "metadata": {
-            "domain": data.url.split('/')[2] if len(data.url.split('/')) > 2 else data.url,
-            "protocol": "https" if "https" in data.url else "http",
-            "threats_detected": len(analysis['threats'])
-        },
-        "iocs": {
-            "ips": [f"192.168.{random.randint(1,255)}.{random.randint(1,255)}"],
-            "domains": [data.url.split('/')[2] if len(data.url.split('/')) > 2 else data.url],
-            "hashes": [hashlib.md5(data.url.encode()).hexdigest()]
-        }
-    })
-    
-    await db.scans.update_one({"id": scan_id}, {"$set": scan_doc})
-    
-    if cost > 0:
-        await db.users.update_one({"id": user.id}, {"$inc": {"credits": -cost}})
-        await db.credit_history.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": user.id,
-            "amount": -cost,
-            "reason": "URL scan",
-            "scan_id": scan_id,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-    
-    await db.activity_logs.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user.id,
-        "action": "url_scan",
-        "details": f"Scanned URL: {data.url}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    await create_notification(user.id, "scan_complete", f"URL scan completed: {analysis['risk_level']}")
-    
-    return {**{k: v for k, v in scan_doc.items() if k != "_id"}, "credits_used": cost}
+
+    # Store IOCs
+    if iocs:
+        ioc_docs = [{"scan_id": scan_id, "ioc_type": i["ioc_type"], "value": i["value"], "confidence": i["confidence"], "created_at": datetime.now(timezone.utc).isoformat()} for i in iocs]
+        await db.iocs.insert_many(ioc_docs)
+
+    await update_scan_status(scan_id, "completed")
+
+    # Trigger webhooks for enterprise
+    if user.plan == "enterprise":
+        await trigger_webhooks(user.id, "scan.completed", {
+            "scan_id": scan_id, "target": data.url, "risk_score": risk_data["risk_score"],
+            "risk_level": risk_data["risk_level"]
+        }, db)
+
+    scan_doc.pop("_id", None)
+    scan_doc.pop("raw_results", None)
+    scan_doc["iocs"] = iocs
+    scan_doc["credits_used"] = cost
+    scan_doc["credits_remaining"] = user_doc["credits"] - cost
+    return scan_doc
+
 
 @api_router.post("/scan/file")
 async def scan_file(file: UploadFile = File(...), user: User = Depends(get_current_user)):
-    fresh_user = await db.users.find_one({"id": user.id})
-    
-    if fresh_user['plan'] == 'enterprise':
-        cost = 0
-    elif fresh_user['plan'] == 'premium':
-        cost = 6
-    else:
-        cost = 10
-    
-    if cost > 0 and fresh_user['credits'] < cost:
+    cost = SCAN_COSTS["file"].get(user.plan, 10)
+    user_doc = await db.users.find_one({"id": user.id})
+    if user_doc["credits"] < cost:
         raise HTTPException(status_code=402, detail="Insufficient credits")
-    
-    file_content = await file.read()
-    file_hash = hashlib.sha256(file_content).hexdigest()
-    
+
+    file_bytes = await file.read()
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
     scan_id = str(uuid.uuid4())
+
+    await db.users.update_one({"id": user.id}, {"$inc": {"credits": -cost}})
+    await enqueue_scan(user.id, "file", file.filename, user.plan, scan_id)
+    await update_scan_status(scan_id, "processing")
+
+    results = []
+    results.append(await scan_file_virustotal(file_bytes, file.filename))
+    results.append(await scan_file_malwarebazaar(file_hash))
+
+    risk_data = compute_risk_score(results)
+    iocs = extract_iocs_from_results(results, file.filename, "file")
+    # Add file hash as IOC
+    iocs.append({"ioc_type": "sha256", "value": file_hash, "confidence": 100})
+
     scan_doc = {
-        "id": scan_id,
-        "user_id": user.id,
-        "scan_type": "file",
-        "target": file.filename,
-        "status": "queued",
-        "risk_score": 0,
-        "risk_level": "unknown",
-        "metadata": {},
-        "iocs": {},
-        "summary": "",
+        "id": scan_id, "user_id": user.id, "scan_type": "file",
+        "target": file.filename, "status": "completed",
+        "file_hash": file_hash, "file_size": len(file_bytes),
+        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
+        "malicious_detections": risk_data["malicious_detections"],
+        "total_engines": risk_data["total_engines"],
+        "threats": risk_data["threats"],
+        "raw_results": results,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.scans.insert_one(scan_doc)
-    
-    analysis = analyze_file(file.filename, file_content)
-    
-    scan_doc.update({
-        "status": "completed",
-        "risk_score": analysis['risk_score'],
-        "risk_level": analysis['risk_level'],
-        "summary": analysis['summary'],
-        "metadata": {
-            "filename": file.filename,
-            "size": len(file_content),
-            "type": file.content_type,
-            "hash": file_hash,
-            "threats_detected": len(analysis['threats'])
-        },
-        "iocs": {
-            "ips": [f"10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,255)}"],
-            "domains": [f"malicious{random.randint(1,999)}.com"],
-            "hashes": [file_hash]
-        }
-    })
-    
-    await db.scans.update_one({"id": scan_id}, {"$set": scan_doc})
-    
-    if cost > 0:
-        await db.users.update_one({"id": user.id}, {"$inc": {"credits": -cost}})
-        await db.credit_history.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": user.id,
-            "amount": -cost,
-            "reason": "File scan",
-            "scan_id": scan_id,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-    
-    await db.activity_logs.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user.id,
-        "action": "file_scan",
-        "details": f"Scanned file: {file.filename}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    await create_notification(user.id, "scan_complete", f"File scan completed: {analysis['risk_level']}")
-    
-    return {**{k: v for k, v in scan_doc.items() if k != "_id"}, "credits_used": cost}
+
+    if iocs:
+        ioc_docs = [{"scan_id": scan_id, "ioc_type": i["ioc_type"], "value": i["value"], "confidence": i["confidence"], "created_at": datetime.now(timezone.utc).isoformat()} for i in iocs]
+        await db.iocs.insert_many(ioc_docs)
+
+    await update_scan_status(scan_id, "completed")
+
+    if user.plan == "enterprise":
+        await trigger_webhooks(user.id, "scan.completed", {
+            "scan_id": scan_id, "target": file.filename, "risk_score": risk_data["risk_score"],
+            "risk_level": risk_data["risk_level"], "file_hash": file_hash
+        }, db)
+
+    scan_doc.pop("_id", None)
+    scan_doc.pop("raw_results", None)
+    scan_doc["iocs"] = iocs
+    scan_doc["credits_used"] = cost
+    scan_doc["credits_remaining"] = user_doc["credits"] - cost
+    return scan_doc
+
 
 @api_router.get("/scan/{scan_id}")
 async def get_scan(scan_id: str, user: User = Depends(get_current_user)):
-    scan = await db.scans.find_one({"id": scan_id}, {"_id": 0})
+    scan = await db.scans.find_one({"id": scan_id, "user_id": user.id}, {"_id": 0, "raw_results": 0})
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-    
-    if scan['user_id'] != user.id and user.role not in ["admin", "owner"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
+    iocs = await db.iocs.find({"scan_id": scan_id}, {"_id": 0}).to_list(100)
+    scan["iocs"] = iocs
     return scan
 
-@api_router.get("/scan/history/list")
-async def get_scan_history(user: User = Depends(get_current_user)):
-    scans = await db.scans.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    return scans
 
-@api_router.get("/user/profile")
-async def get_profile(user: User = Depends(get_current_user)):
-    return user
+@api_router.get("/scan/queue/status/{scan_id}")
+async def get_scan_queue_status(scan_id: str, user: User = Depends(get_current_user)):
+    return await get_queue_position(scan_id)
 
-@api_router.get("/user/stats")
-async def get_user_stats(user: User = Depends(get_current_user)):
-    total_scans = await db.scans.count_documents({"user_id": user.id})
-    malicious_count = await db.scans.count_documents({"user_id": user.id, "risk_level": "malicious"})
-    suspicious_count = await db.scans.count_documents({"user_id": user.id, "risk_level": "suspicious"})
-    safe_count = await db.scans.count_documents({"user_id": user.id, "risk_level": "safe"})
-    
+
+@api_router.get("/scans/history")
+async def scan_history(limit: int = 50, skip: int = 0, user: User = Depends(get_current_user)):
+    scans = await db.scans.find(
+        {"user_id": user.id}, {"_id": 0, "raw_results": 0}
+    ).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.scans.count_documents({"user_id": user.id})
+    return {"scans": scans, "total": total}
+
+
+# ==================== IOC ROUTES (Premium+) ====================
+
+@api_router.get("/iocs/scan/{scan_id}")
+async def get_scan_iocs(scan_id: str, user: User = Depends(require_plan("premium"))):
+    scan = await db.scans.find_one({"id": scan_id, "user_id": user.id})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    iocs = await db.iocs.find({"scan_id": scan_id}, {"_id": 0}).to_list(500)
+    return {"scan_id": scan_id, "iocs": iocs, "total": len(iocs)}
+
+
+@api_router.get("/iocs/export/{scan_id}")
+async def export_iocs(scan_id: str, format: str = "json", user: User = Depends(require_plan("premium"))):
+    scan = await db.scans.find_one({"id": scan_id, "user_id": user.id})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    iocs = await db.iocs.find({"scan_id": scan_id}, {"_id": 0}).to_list(500)
+
+    if format == "csv":
+        csv_lines = ["ioc_type,value,confidence"]
+        for ioc in iocs:
+            csv_lines.append(f"{ioc['ioc_type']},{ioc['value']},{ioc['confidence']}")
+        return Response(content="\n".join(csv_lines), media_type="text/csv",
+                       headers={"Content-Disposition": f"attachment; filename=iocs_{scan_id[:8]}.csv"})
+    return {"scan_id": scan_id, "iocs": iocs}
+
+
+@api_router.get("/iocs/all")
+async def get_all_user_iocs(limit: int = 100, ioc_type: Optional[str] = None, user: User = Depends(require_plan("premium"))):
+    """Get all IOCs across user's scans"""
+    user_scans = await db.scans.find({"user_id": user.id}, {"id": 1, "_id": 0}).to_list(1000)
+    scan_ids = [s["id"] for s in user_scans]
+    query = {"scan_id": {"$in": scan_ids}}
+    if ioc_type:
+        query["ioc_type"] = ioc_type
+    iocs = await db.iocs.find(query, {"_id": 0}).sort("confidence", -1).limit(limit).to_list(limit)
+    return {"iocs": iocs, "total": len(iocs)}
+
+
+# ==================== API KEY ROUTES (Premium+) ====================
+
+@api_router.post("/apikey/generate")
+async def generate_user_api_key(user: User = Depends(require_plan("premium"))):
+    new_key = generate_api_key()
+    await db.users.update_one({"id": user.id}, {"$set": {"api_key": new_key}})
+    await create_audit_log("api_key_generated", user.id, details="API key generated")
+    return {"api_key": new_key, "message": "Store this key securely - it won't be shown again in full"}
+
+
+@api_router.delete("/apikey/revoke")
+async def revoke_api_key(user: User = Depends(require_plan("premium"))):
+    await db.users.update_one({"id": user.id}, {"$set": {"api_key": None, "api_call_count": 0}})
+    await create_audit_log("api_key_revoked", user.id, details="API key revoked")
+    return {"message": "API key revoked"}
+
+
+@api_router.get("/apikey/usage")
+async def get_api_key_usage(user: User = Depends(require_plan("premium"))):
+    user_doc = await db.users.find_one({"id": user.id}, {"_id": 0})
+    plan_config = PLAN_CONFIG.get(user.plan, PLAN_CONFIG["free"])
     return {
-        "total_scans": total_scans,
-        "malicious": malicious_count,
-        "suspicious": suspicious_count,
-        "safe": safe_count
+        "has_key": bool(user_doc.get("api_key")),
+        "key_preview": mask_key(user_doc["api_key"]) if user_doc.get("api_key") else None,
+        "calls_today": user_doc.get("api_call_count", 0),
+        "daily_limit": plan_config["api_calls_per_day"],
+        "reset_date": user_doc.get("api_call_reset", "")
     }
 
-@api_router.get("/user/credits/history")
-async def get_credit_history(user: User = Depends(get_current_user)):
-    history = await db.credit_history.find({"user_id": user.id}, {"_id": 0}).sort("timestamp", -1).limit(50).to_list(50)
-    return history
 
-@api_router.get("/user/notifications")
-async def get_notifications(user: User = Depends(get_current_user)):
-    notifications = await db.notifications.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(20).to_list(20)
-    return notifications
+# ==================== API ENDPOINT (External API access via key) ====================
 
-@api_router.put("/user/notifications/{notification_id}/read")
-async def mark_notification_read(notification_id: str, user: User = Depends(get_current_user)):
-    await db.notifications.update_one({"id": notification_id, "user_id": user.id}, {"$set": {"read": True}})
-    return {"message": "Notification marked as read"}
+@api_router.post("/v1/scan/url")
+async def api_scan_url(data: ScanURLRequest, user: User = Depends(get_user_by_api_key)):
+    """External API endpoint for URL scanning"""
+    cost = SCAN_COSTS["url"].get(user.plan, 5)
+    user_doc = await db.users.find_one({"id": user.id})
+    if user_doc["credits"] < cost:
+        raise HTTPException(status_code=402, detail="Insufficient credits")
 
-@api_router.post("/billing/upgrade")
-async def upgrade_plan(data: UpgradePlan, user: User = Depends(get_current_user)):
-    if data.plan not in ['free', 'premium', 'enterprise']:
-        raise HTTPException(status_code=400, detail="Invalid plan")
-    
-    if user.plan == data.plan:
-        raise HTTPException(status_code=400, detail="Already on this plan")
-    
-    amount = PLAN_PRICES.get(data.plan, 0)
-    
-    transaction_id = str(uuid.uuid4())
-    await db.transactions.insert_one({
-        "id": transaction_id,
-        "user_id": user.id,
-        "plan": data.plan,
-        "amount": amount,
-        "status": "pending",
-        "payment_id": None,
+    scan_id = str(uuid.uuid4())
+    await db.users.update_one({"id": user.id}, {"$inc": {"credits": -cost}})
+    await update_scan_status(scan_id, "processing")
+
+    results = []
+    results.append(await scan_url_urlhaus(data.url))
+    results.append(await scan_url_virustotal(data.url))
+    if user.plan in ("premium", "enterprise"):
+        results.append(await scan_url_urlscan(data.url))
+
+    risk_data = compute_risk_score(results)
+    iocs = extract_iocs_from_results(results, data.url, "url")
+
+    scan_doc = {
+        "id": scan_id, "user_id": user.id, "scan_type": "url",
+        "target": data.url, "status": "completed",
+        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
+        "malicious_detections": risk_data["malicious_detections"],
+        "total_engines": risk_data["total_engines"],
+        "threats": risk_data["threats"],
+        "raw_results": results,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.scans.insert_one(scan_doc)
+
+    if iocs:
+        ioc_docs = [{"scan_id": scan_id, "ioc_type": i["ioc_type"], "value": i["value"], "confidence": i["confidence"], "created_at": datetime.now(timezone.utc).isoformat()} for i in iocs]
+        await db.iocs.insert_many(ioc_docs)
+
+    await update_scan_status(scan_id, "completed")
+
+    return {
+        "scan_id": scan_id, "target": data.url,
+        "risk_score": risk_data["risk_score"], "risk_level": risk_data["risk_level"],
+        "malicious_detections": risk_data["malicious_detections"],
+        "total_engines": risk_data["total_engines"],
+        "threats": risk_data["threats"], "iocs": iocs
+    }
+
+
+# ==================== REPORTS (Premium+) ====================
+
+@api_router.get("/reports/scan/{scan_id}/pdf")
+async def download_scan_report(scan_id: str, user: User = Depends(require_plan("premium"))):
+    scan = await db.scans.find_one({"id": scan_id, "user_id": user.id}, {"_id": 0, "raw_results": 0})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    iocs = await db.iocs.find({"scan_id": scan_id}, {"_id": 0}).to_list(100)
+    user_info = {"email": user.email, "name": user.name}
+    pdf_bytes = generate_scan_pdf(scan, iocs, user_info)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                   headers={"Content-Disposition": f"attachment; filename=scan_report_{scan_id[:8]}.pdf"})
+
+
+@api_router.get("/reports/summary")
+async def download_summary_report(period: str = "weekly", user: User = Depends(require_plan("premium"))):
+    days = {"daily": 1, "weekly": 7, "monthly": 30}.get(period, 7)
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    scans = await db.scans.find(
+        {"user_id": user.id, "created_at": {"$gte": since}}, {"_id": 0, "raw_results": 0}
+    ).sort("created_at", -1).to_list(100)
+    user_info = {"email": user.email, "name": user.name}
+    pdf_bytes = generate_summary_pdf(scans, user_info, period)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                   headers={"Content-Disposition": f"attachment; filename={period}_report.pdf"})
+
+
+@api_router.post("/reports/schedule")
+async def create_report_schedule(data: ReportScheduleCreate, user: User = Depends(require_plan("premium"))):
+    if data.frequency not in ("daily", "weekly", "monthly"):
+        raise HTTPException(status_code=400, detail="Frequency must be daily, weekly, or monthly")
+    # Check existing
+    existing = await db.report_schedules.find_one({"user_id": user.id})
+    now = datetime.now(timezone.utc)
+    delta = {"daily": timedelta(days=1), "weekly": timedelta(days=7), "monthly": timedelta(days=30)}
+    next_send = now + delta.get(data.frequency, timedelta(days=7))
+
+    if existing:
+        await db.report_schedules.update_one(
+            {"user_id": user.id},
+            {"$set": {"frequency": data.frequency, "format": data.format, "next_send": next_send.isoformat(), "enabled": True}}
+        )
+    else:
+        await db.report_schedules.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user.id,
+            "frequency": data.frequency, "format": data.format,
+            "last_sent": None, "next_send": next_send.isoformat(), "enabled": True
+        })
+    return {"message": f"Report schedule set to {data.frequency}", "next_send": next_send.isoformat()}
+
+
+@api_router.get("/reports/schedule")
+async def get_report_schedule(user: User = Depends(require_plan("premium"))):
+    schedule = await db.report_schedules.find_one({"user_id": user.id}, {"_id": 0})
+    if not schedule:
+        return {"enabled": False}
+    return schedule
+
+
+@api_router.delete("/reports/schedule")
+async def delete_report_schedule(user: User = Depends(require_plan("premium"))):
+    await db.report_schedules.update_one({"user_id": user.id}, {"$set": {"enabled": False}})
+    return {"message": "Report schedule disabled"}
+
+
+@api_router.post("/reports/send-now")
+async def send_report_now(user: User = Depends(require_plan("premium"))):
+    scans = await db.scans.find(
+        {"user_id": user.id}, {"_id": 0, "raw_results": 0}
+    ).sort("created_at", -1).limit(50).to_list(50)
+    user_info = {"email": user.email, "name": user.name}
+    pdf_bytes = generate_summary_pdf(scans, user_info, "on-demand")
+    result = await send_report_email(
+        user.email, "Link Shield - Scan Report",
+        "<h2>Your Link Shield Report</h2><p>Please find your scan summary attached.</p>",
+        pdf_bytes, "linkshield_report.pdf"
+    )
+    if result["success"]:
+        return {"message": "Report sent to your email"}
+    return {"message": "Report generated but email delivery failed (SMTP not configured)", "error": result.get("error")}
+
+
+# ==================== TEAMS (Enterprise) ====================
+
+@api_router.post("/teams")
+async def create_team(data: TeamCreate, user: User = Depends(require_plan("enterprise"))):
+    existing = await db.teams.find_one({"owner_id": user.id})
+    if existing:
+        raise HTTPException(status_code=400, detail="You already have a team")
+    team_id = str(uuid.uuid4())
+    await db.teams.insert_one({
+        "id": team_id, "name": data.name, "owner_id": user.id,
         "created_at": datetime.now(timezone.utc).isoformat()
     })
-    
-    return {
-        "message": "Upgrade request created",
-        "transaction_id": transaction_id,
-        "amount": amount,
-        "note": "Payment integration not yet implemented. Contact admin to complete upgrade."
-    }
+    await db.team_members.insert_one({
+        "id": str(uuid.uuid4()), "team_id": team_id, "user_id": user.id, "role": "owner"
+    })
+    return {"id": team_id, "name": data.name, "message": "Team created"}
 
-@api_router.post("/billing/create-order")
-async def create_razorpay_order(data: CreateOrderRequest, user: User = Depends(get_current_user)):
-    if data.plan not in ['premium', 'enterprise']:
-        raise HTTPException(status_code=400, detail="Invalid plan for payment")
-    
-    if user.plan == data.plan:
-        raise HTTPException(status_code=400, detail="Already on this plan")
-    
-    amount = PLAN_PRICES[data.plan]
-    gateway_config = await get_payment_gateway_config()
-    
-    if not gateway_config["is_active"]:
-        raise HTTPException(status_code=503, detail="Payment gateway is currently disabled")
-    
-    try:
-        rz_client = create_razorpay_client(gateway_config["key_id"], gateway_config["key_secret"])
-        order_data = {
-            'amount': amount * 100,
-            'currency': 'INR',
-            'receipt': f'order_{user.id}_{int(datetime.now(timezone.utc).timestamp())}',
-            'notes': {
-                'user_id': user.id,
-                'plan': data.plan,
-                'email': user.email
-            }
-        }
-        
-        order = rz_client.order.create(data=order_data)
-        
-        transaction_id = str(uuid.uuid4())
-        await db.transactions.insert_one({
-            "id": transaction_id,
-            "user_id": user.id,
-            "plan": data.plan,
-            "amount": amount,
-            "status": "pending",
-            "order_id": order['id'],
-            "payment_id": None,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        })
-        
-        return {
-            "order_id": order['id'],
-            "amount": amount,
-            "currency": "INR",
-            "key_id": gateway_config["key_id"],
-            "transaction_id": transaction_id
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
 
-@api_router.post("/billing/verify-payment")
-async def verify_payment(data: VerifyPaymentRequest, user: User = Depends(get_current_user)):
-    try:
-        gateway_config = await get_payment_gateway_config()
-        signature_string = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
-        generated_signature = hmac.new(
-            gateway_config["key_secret"].encode(),
-            signature_string.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        if generated_signature != data.razorpay_signature:
-            raise HTTPException(status_code=400, detail="Invalid payment signature")
-        
-        transaction = await db.transactions.find_one({
-            "user_id": user.id,
-            "order_id": data.razorpay_order_id
-        })
-        
-        if not transaction:
-            raise HTTPException(status_code=404, detail="Transaction not found")
-        
-        await db.transactions.update_one(
-            {"id": transaction['id']},
-            {
-                "$set": {
-                    "status": "completed",
-                    "payment_id": data.razorpay_payment_id,
-                    "completed_at": datetime.now(timezone.utc).isoformat()
-                }
-            }
-        )
-        
-        new_credits = PLAN_FEATURES[data.plan]['credits_per_month']
-        await db.users.update_one(
-            {"id": user.id},
-            {
-                "$set": {
-                    "plan": data.plan,
-                    "credits": new_credits
-                }
-            }
-        )
-        
-        await db.credit_history.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": user.id,
-            "amount": new_credits,
-            "reason": f"Plan upgraded to {data.plan}",
-            "transaction_id": transaction['id'],
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        
-        await create_notification(
-            user.id,
-            "payment_success",
-            f"Payment successful! Your plan has been upgraded to {data.plan.upper()}"
-        )
-        
-        return {
-            "success": True,
-            "message": "Payment verified and plan upgraded successfully",
-            "plan": data.plan,
-            "credits": new_credits
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Payment verification failed: {str(e)}")
+@api_router.get("/teams/my")
+async def get_my_team(user: User = Depends(require_plan("enterprise"))):
+    team = await db.teams.find_one({"owner_id": user.id}, {"_id": 0})
+    if not team:
+        # Check if member of a team
+        membership = await db.team_members.find_one({"user_id": user.id}, {"_id": 0})
+        if membership:
+            team = await db.teams.find_one({"id": membership["team_id"]}, {"_id": 0})
+    if not team:
+        return {"has_team": False}
+    members = await db.team_members.find({"team_id": team["id"]}, {"_id": 0}).to_list(100)
+    # Enrich with user info
+    for m in members:
+        u = await db.users.find_one({"id": m["user_id"]}, {"_id": 0, "password_hash": 0, "api_key": 0})
+        if u:
+            m["user_info"] = {"name": u.get("name"), "email": u.get("email"), "username": u.get("username")}
+    team["members"] = members
+    team["has_team"] = True
+    return team
 
-@api_router.post("/billing/webhook")
-async def razorpay_webhook(request: Request):
-    try:
-        gateway_config = await get_payment_gateway_config()
-        webhook_signature = request.headers.get('X-Razorpay-Signature')
-        webhook_body = await request.body()
-        
-        rz_client = create_razorpay_client(gateway_config["key_id"], gateway_config["key_secret"])
-        rz_client.utility.verify_webhook_signature(
-            webhook_body.decode(),
-            webhook_signature,
-            gateway_config["key_secret"]
-        )
-        
-        payload = await request.json()
-        event = payload.get('event')
-        
-        if event == 'payment.captured':
-            payment_entity = payload['payload']['payment']['entity']
-            order_id = payment_entity['order_id']
-            payment_id = payment_entity['id']
-            
-            transaction = await db.transactions.find_one({"order_id": order_id})
-            
-            if transaction and transaction['status'] == 'pending':
-                await db.transactions.update_one(
-                    {"id": transaction['id']},
-                    {
-                        "$set": {
-                            "status": "completed",
-                            "payment_id": payment_id,
-                            "completed_at": datetime.now(timezone.utc).isoformat()
-                        }
-                    }
-                )
-                
-                plan = transaction['plan']
-                new_credits = PLAN_FEATURES[plan]['credits_per_month']
-                
-                await db.users.update_one(
-                    {"id": transaction['user_id']},
-                    {
-                        "$set": {
-                            "plan": plan,
-                            "credits": new_credits
-                        }
-                    }
-                )
-                
-                await create_notification(
-                    transaction['user_id'],
-                    "payment_success",
-                    f"Payment successful! Your plan has been upgraded to {plan.upper()}"
-                )
-        
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return {"status": "error", "message": str(e)}
 
-@api_router.get("/billing/history")
-async def get_billing_history(user: User = Depends(get_current_user)):
-    history = await db.transactions.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).to_list(50)
-    return history
+@api_router.post("/teams/members")
+async def add_team_member(data: TeamMemberAdd, user: User = Depends(require_plan("enterprise"))):
+    team = await db.teams.find_one({"owner_id": user.id})
+    if not team:
+        raise HTTPException(status_code=404, detail="You don't have a team")
+    # Check member limit
+    member_count = await db.team_members.count_documents({"team_id": team["id"]})
+    if member_count >= PLAN_CONFIG["enterprise"]["max_team_members"]:
+        raise HTTPException(status_code=400, detail="Team member limit reached")
+    # Find user by email
+    target = await db.users.find_one({"email": data.email})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found with that email")
+    existing = await db.team_members.find_one({"team_id": team["id"], "user_id": target["id"]})
+    if existing:
+        raise HTTPException(status_code=400, detail="User already in team")
+    await db.team_members.insert_one({
+        "id": str(uuid.uuid4()), "team_id": team["id"], "user_id": target["id"], "role": data.role
+    })
+    await create_notification(target["id"], "team_invite", f"You've been added to team '{team['name']}'")
+    return {"message": f"{data.email} added to team"}
 
-@api_router.get("/billing/plans")
-async def get_plans():
-    plans = []
-    for plan_name, price in PLAN_PRICES.items():
-        plans.append({
-            "name": plan_name,
-            "price": price,
-            "features": PLAN_FEATURES[plan_name]['features'],
-            "credits_per_month": PLAN_FEATURES[plan_name]['credits_per_month']
-        })
-    return plans
 
-@api_router.get("/admin/users", dependencies=[Depends(get_admin_user)])
-async def get_all_users(search: Optional[str] = None, status: Optional[str] = None):
+@api_router.delete("/teams/members/{member_user_id}")
+async def remove_team_member(member_user_id: str, user: User = Depends(require_plan("enterprise"))):
+    team = await db.teams.find_one({"owner_id": user.id})
+    if not team:
+        raise HTTPException(status_code=404, detail="You don't have a team")
+    if member_user_id == user.id:
+        raise HTTPException(status_code=400, detail="Cannot remove yourself from your own team")
+    result = await db.team_members.delete_one({"team_id": team["id"], "user_id": member_user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Member not found")
+    return {"message": "Member removed"}
+
+
+# ==================== WEBHOOKS (Enterprise) ====================
+
+@api_router.post("/webhooks")
+async def create_webhook(data: WebhookCreate, user: User = Depends(require_plan("enterprise"))):
+    webhook_count = await db.webhooks.count_documents({"user_id": user.id})
+    if webhook_count >= 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 webhooks allowed")
+    valid_events = ["scan.completed", "scan.failed", "credits.low", "team.member_added"]
+    for event in data.events:
+        if event not in valid_events:
+            raise HTTPException(status_code=400, detail=f"Invalid event: {event}. Valid: {valid_events}")
+    webhook_id = str(uuid.uuid4())
+    secret = data.secret or secrets.token_hex(32)
+    await db.webhooks.insert_one({
+        "id": webhook_id, "user_id": user.id, "url": data.url,
+        "events": data.events, "secret": secret, "enabled": True,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    return {"id": webhook_id, "secret": secret, "message": "Webhook created"}
+
+
+@api_router.get("/webhooks")
+async def list_webhooks(user: User = Depends(require_plan("enterprise"))):
+    webhooks = await db.webhooks.find({"user_id": user.id}, {"_id": 0}).to_list(20)
+    for wh in webhooks:
+        wh["secret"] = mask_key(wh.get("secret", ""))
+        deliveries = await db.webhook_deliveries.find(
+            {"webhook_id": wh["id"]}, {"_id": 0}
+        ).sort("created_at", -1).limit(5).to_list(5)
+        wh["recent_deliveries"] = deliveries
+    return webhooks
+
+
+@api_router.delete("/webhooks/{webhook_id}")
+async def delete_webhook(webhook_id: str, user: User = Depends(require_plan("enterprise"))):
+    result = await db.webhooks.delete_one({"id": webhook_id, "user_id": user.id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return {"message": "Webhook deleted"}
+
+
+@api_router.post("/webhooks/{webhook_id}/test")
+async def test_webhook(webhook_id: str, user: User = Depends(require_plan("enterprise"))):
+    webhook = await db.webhooks.find_one({"id": webhook_id, "user_id": user.id})
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    from services.webhooks import deliver_webhook
+    result = await deliver_webhook(webhook, "test.ping", {"message": "Test ping from Link Shield", "timestamp": datetime.now(timezone.utc).isoformat()}, db)
+    return {"success": result.get("success"), "status_code": result.get("response_status"), "error": result.get("error")}
+
+
+# ==================== ADMIN ROUTES ====================
+
+@api_router.get("/admin/users")
+async def admin_get_users(search: Optional[str] = None, user: User = Depends(get_admin_user)):
     query = {}
     if search:
-        query["$or"] = [
+        query = {"$or": [
             {"email": {"$regex": search, "$options": "i"}},
-            {"name": {"$regex": search, "$options": "i"}}
-        ]
-    if status:
-        query["status"] = status
-    users = await db.users.find(query, {"_id": 0, "password_hash": 0}).to_list(1000)
+            {"name": {"$regex": search, "$options": "i"}},
+            {"username": {"$regex": search, "$options": "i"}}
+        ]}
+    users = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(200)
     return users
 
-@api_router.get("/admin/users/{user_id}", dependencies=[Depends(get_admin_user)])
-async def get_user_details(user_id: str):
-    user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
-    if not user:
+
+@api_router.put("/admin/users/{user_id}/plan")
+async def update_user_plan(user_id: str, data: UpdatePlanRequest, current_user: User = Depends(get_owner_user)):
+    if data.plan not in PLAN_CONFIG:
+        raise HTTPException(status_code=400, detail="Invalid plan")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    scan_count = await db.scans.count_documents({"user_id": user_id})
-    credit_history = await db.credit_history.find({"user_id": user_id}, {"_id": 0}).sort("timestamp", -1).limit(10).to_list(10)
-    
-    return {
-        "user": user,
-        "scan_count": scan_count,
-        "recent_credit_history": credit_history
-    }
+    old_plan = target["plan"]
+    new_credits = PLAN_CONFIG[data.plan]["credits_per_month"]
+    await db.users.update_one({"id": user_id}, {"$set": {"plan": data.plan, "credits": new_credits}})
+    await create_audit_log("plan_changed", current_user.id, user_id, f"Plan: {old_plan} -> {data.plan}")
+    await create_notification(user_id, "plan_changed", f"Your plan has been updated to {data.plan.upper()}")
+    return {"message": "Plan updated", "new_plan": data.plan, "new_credits": new_credits}
 
-@api_router.put("/admin/users/{user_id}/status")
-async def update_user_status(user_id: str, data: UpdateUserStatus, current_user: User = Depends(get_admin_user)):
-    target_user = await db.users.find_one({"id": user_id})
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if target_user['role'] == 'owner':
-        raise HTTPException(status_code=403, detail="Cannot modify owner status")
-    
-    result = await db.users.update_one({"id": user_id}, {"$set": {"status": data.status}})
-    
-    await db.activity_logs.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": current_user.id,
-        "action": "user_status_update",
-        "details": f"Updated {target_user['email']} status to {data.status}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    return {"message": f"User status updated to {data.status}"}
-
-@api_router.post("/admin/users/{user_id}/add-credits")
-async def add_credits_to_user(user_id: str, data: AddCredits, current_user: User = Depends(get_admin_user)):
-    user = await db.users.find_one({"id": user_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    await db.users.update_one({"id": user_id}, {"$inc": {"credits": data.amount}})
-    
-    await db.credit_history.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "amount": data.amount,
-        "reason": f"Admin credit addition: {data.reason}",
-        "admin_id": current_user.id,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    await create_notification(user_id, "credits_added", f"{data.amount} credits added to your account")
-    
-    return {"message": "Credits added successfully", "new_balance": user['credits'] + data.amount}
-
-@api_router.post("/admin/users/{user_id}/deduct-credits")
-async def deduct_credits_from_user(user_id: str, data: DeductCredits, current_user: User = Depends(get_admin_user)):
-    user = await db.users.find_one({"id": user_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if user['credits'] < data.amount:
-        raise HTTPException(status_code=400, detail="Insufficient credits to deduct")
-    
-    await db.users.update_one({"id": user_id}, {"$inc": {"credits": -data.amount}})
-    
-    await db.credit_history.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "amount": -data.amount,
-        "reason": f"Admin credit deduction: {data.reason}",
-        "admin_id": current_user.id,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    return {"message": "Credits deducted successfully", "new_balance": user['credits'] - data.amount}
-
-@api_router.post("/admin/users/{user_id}/reset-credits")
-async def reset_user_credits(user_id: str, current_user: User = Depends(get_admin_user)):
-    user = await db.users.find_one({"id": user_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    plan_credits = PLAN_FEATURES[user['plan']]['credits_per_month']
-    
-    await db.users.update_one({"id": user_id}, {"$set": {"credits": plan_credits}})
-    
-    await db.credit_history.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "amount": plan_credits,
-        "reason": "Admin credit reset",
-        "admin_id": current_user.id,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    return {"message": "Credits reset successfully", "new_balance": plan_credits}
-
-@api_router.get("/admin/scans")
-async def get_all_scans(
-    status: Optional[str] = None,
-    risk_level: Optional[str] = None,
-    limit: int = 100,
-    current_user: User = Depends(get_admin_user)
-):
-    query = {}
-    if status:
-        query["status"] = status
-    if risk_level:
-        query["risk_level"] = risk_level
-    
-    scans = await db.scans.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
-    
-    for scan in scans:
-        user = await db.users.find_one({"id": scan['user_id']}, {"_id": 0, "email": 1, "name": 1})
-        if user:
-            scan['user_info'] = user
-    
-    return scans
-
-@api_router.get("/admin/scans/{scan_id}")
-async def get_scan_admin(scan_id: str, current_user: User = Depends(get_admin_user)):
-    scan = await db.scans.find_one({"id": scan_id}, {"_id": 0})
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    
-    user = await db.users.find_one({"id": scan['user_id']}, {"_id": 0, "email": 1, "name": 1, "role": 1})
-    scan['user_info'] = user
-    
-    return scan
-
-@api_router.get("/admin/analytics/detailed")
-async def get_detailed_analytics(current_user: User = Depends(get_admin_user)):
-    total_users = await db.users.count_documents({})
-    active_users = await db.users.count_documents({"status": {"$ne": "disabled"}})
-    total_scans = await db.scans.count_documents({})
-    
-    scans_today = await db.scans.count_documents({
-        "created_at": {"$gte": datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat()}
-    })
-    
-    revenue_pipeline = [
-        {"$match": {"status": "completed"}},
-        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
-    ]
-    revenue_result = await db.transactions.aggregate(revenue_pipeline).to_list(1)
-    total_revenue = revenue_result[0]['total'] if revenue_result else 0
-    
-    return {
-        "total_users": total_users,
-        "active_users": active_users,
-        "total_scans": total_scans,
-        "scans_today": scans_today,
-        "total_revenue": total_revenue,
-        "premium_users": await db.users.count_documents({"plan": "premium"}),
-        "enterprise_users": await db.users.count_documents({"plan": "enterprise"}),
-        "free_users": await db.users.count_documents({"plan": "free"})
-    }
-
-@api_router.put("/admin/users/{user_id}/credits", dependencies=[Depends(get_admin_user)])
-async def update_user_credits(user_id: str, data: UpdateUserCredits):
-    result = await db.users.update_one({"id": user_id}, {"$set": {"credits": data.credits}})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    await db.credit_history.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "amount": data.credits,
-        "reason": "Admin adjustment",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    return {"message": "Credits updated"}
-
-@api_router.put("/admin/users/{user_id}/plan", dependencies=[Depends(get_admin_user)])
-async def update_user_plan(user_id: str, data: UpdateUserPlan, current_user: User = Depends(get_current_user)):
-    target_user = await db.users.find_one({"id": user_id})
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    old_plan = target_user['plan']
-    new_credits = PLAN_FEATURES[data.plan]['credits_per_month']
-    
-    await db.users.update_one(
-        {"id": user_id},
-        {"$set": {"plan": data.plan, "credits": new_credits}}
-    )
-    
-    await create_audit_log(
-        action_type="plan_changed",
-        performed_by=current_user.id,
-        target_user=user_id,
-        details=f"Plan changed from {old_plan} to {data.plan}"
-    )
-    
-    await create_notification(
-        user_id,
-        "plan_changed",
-        f"Your plan has been updated to {data.plan.upper()}"
-    )
-    
-    return {"message": "Plan updated"}
 
 @api_router.put("/admin/users/{user_id}/role")
-async def update_user_role(user_id: str, data: UpdateUserRole, current_user: User = Depends(get_admin_user)):
-    target_user = await db.users.find_one({"id": user_id})
-    if not target_user:
+async def update_user_role(user_id: str, data: UpdateRoleRequest, current_user: User = Depends(get_admin_user)):
+    if data.role not in ("user", "admin", "owner"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    if target_user['role'] == 'owner':
-        raise HTTPException(status_code=403, detail="Cannot modify owner role")
-    
-    if data.role == 'admin' and current_user.role != 'owner':
-        raise HTTPException(status_code=403, detail="Only owner can create admins")
-    
-    old_role = target_user['role']
+    if target["role"] == "owner" and current_user.role != "owner":
+        raise HTTPException(status_code=403, detail="Cannot modify owner")
+    if data.role in ("admin", "owner") and current_user.role != "owner":
+        raise HTTPException(status_code=403, detail="Only owner can promote")
     await db.users.update_one({"id": user_id}, {"$set": {"role": data.role}})
-    
-    await create_audit_log(
-        action_type="role_changed",
-        performed_by=current_user.id,
-        target_user=user_id,
-        details=f"Role changed from {old_role} to {data.role}"
-    )
-    
+    await create_audit_log("role_changed", current_user.id, user_id, f"Role changed to {data.role}")
     return {"message": "Role updated"}
 
-@api_router.get("/admin/stats", dependencies=[Depends(get_admin_user)])
-async def get_admin_stats():
+
+@api_router.post("/admin/users/{user_id}/add-credits")
+async def add_credits(user_id: str, data: CreditAdjust, user: User = Depends(get_admin_user)):
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one({"id": user_id}, {"$inc": {"credits": data.amount}})
+    await db.credit_history.insert_one({
+        "user_id": user_id, "amount": data.amount, "reason": data.reason,
+        "admin_id": user.id, "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    await create_audit_log("credits_added", user.id, user_id, f"+{data.amount} credits: {data.reason}")
+    return {"message": f"Added {data.amount} credits"}
+
+
+@api_router.post("/admin/users/{user_id}/deduct-credits")
+async def deduct_credits(user_id: str, data: CreditAdjust, user: User = Depends(get_admin_user)):
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target["credits"] < data.amount:
+        raise HTTPException(status_code=400, detail="Insufficient credits to deduct")
+    await db.users.update_one({"id": user_id}, {"$inc": {"credits": -data.amount}})
+    await db.credit_history.insert_one({
+        "user_id": user_id, "amount": -data.amount, "reason": data.reason,
+        "admin_id": user.id, "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return {"message": f"Deducted {data.amount} credits"}
+
+
+@api_router.post("/admin/users/{user_id}/reset-credits")
+async def reset_credits(user_id: str, user: User = Depends(get_admin_user)):
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    default = PLAN_CONFIG.get(target["plan"], PLAN_CONFIG["free"])["credits_per_month"]
+    await db.users.update_one({"id": user_id}, {"$set": {"credits": default}})
+    return {"message": f"Credits reset to {default}"}
+
+
+@api_router.put("/admin/users/{user_id}/status")
+async def update_user_status(user_id: str, status: dict, user: User = Depends(get_admin_user)):
+    new_status = status.get("status", "active")
+    await db.users.update_one({"id": user_id}, {"$set": {"status": new_status}})
+    return {"message": f"User {new_status}"}
+
+
+@api_router.get("/admin/analytics/detailed")
+async def admin_analytics(user: User = Depends(get_admin_user)):
     total_users = await db.users.count_documents({})
     total_scans = await db.scans.count_documents({})
     premium_users = await db.users.count_documents({"plan": "premium"})
     enterprise_users = await db.users.count_documents({"plan": "enterprise"})
-    recent_scans = await db.scans.find({}, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
-    
+    free_users = await db.users.count_documents({"plan": "free"})
+    active_users = await db.users.count_documents({"status": {"$ne": "suspended"}})
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    scans_today = await db.scans.count_documents({"created_at": {"$regex": f"^{today}"}})
+    queue_stats = await get_queue_stats()
     return {
-        "total_users": total_users,
-        "total_scans": total_scans,
-        "premium_users": premium_users,
-        "enterprise_users": enterprise_users,
-        "free_users": total_users - premium_users - enterprise_users,
-        "recent_scans": recent_scans
+        "total_users": total_users, "total_scans": total_scans,
+        "premium_users": premium_users, "enterprise_users": enterprise_users,
+        "free_users": free_users, "active_users": active_users,
+        "scans_today": scans_today, "queue_stats": queue_stats
     }
 
-@api_router.get("/admin/activity", dependencies=[Depends(get_admin_user)])
-async def get_activity_logs():
-    logs = await db.activity_logs.find({}, {"_id": 0}).sort("timestamp", -1).limit(50).to_list(50)
-    return logs
 
-@api_router.get("/admin/analytics")
-async def get_analytics(current_user: User = Depends(get_admin_user)):
-    pipeline = [
-        {"$group": {
-            "_id": "$risk_level",
-            "count": {"$sum": 1}
-        }}
-    ]
-    threat_distribution = await db.scans.aggregate(pipeline).to_list(100)
-    
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    last_7_days = []
-    for i in range(7):
-        day = today - timedelta(days=i)
-        next_day = day + timedelta(days=1)
-        count = await db.scans.count_documents({
-            "created_at": {"$gte": day.isoformat(), "$lt": next_day.isoformat()}
-        })
-        last_7_days.append({"date": day.strftime("%Y-%m-%d"), "count": count})
-    
-    return {
-        "threat_distribution": threat_distribution,
-        "scan_trends": list(reversed(last_7_days))
-    }
+@api_router.get("/admin/scans")
+async def admin_get_scans(limit: int = 50, user: User = Depends(get_admin_user)):
+    scans = await db.scans.find({}, {"_id": 0, "raw_results": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    for scan in scans:
+        u = await db.users.find_one({"id": scan.get("user_id")}, {"_id": 0, "email": 1, "name": 1})
+        scan["user_info"] = u
+    return scans
+
+
+# ==================== OWNER ROUTES ====================
 
 @api_router.post("/owner/create-admin")
-async def create_admin(data: CreateAdmin, current_user: User = Depends(get_owner_user)):
+async def create_admin(data: CreateAdminRequest, current_user: User = Depends(get_owner_user)):
     existing = await db.users.find_one({"email": data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Generate username from email prefix
-    username = data.email.split('@')[0].lower().replace('.', '_').replace('-', '_')
-    username = re.sub(r'[^a-z0-9_]', '', username)[:20]
-    # Ensure uniqueness
-    existing_username = await db.users.find_one({"username": username})
+    username = re.sub(r'[^a-z0-9_]', '', data.email.split('@')[0].lower())[:20]
+    existing_un = await db.users.find_one({"username": username})
     counter = 1
-    base_username = username
-    while existing_username:
-        username = f"{base_username}{counter}"[:20]
-        existing_username = await db.users.find_one({"username": username})
+    base = username
+    while existing_un:
+        username = f"{base}{counter}"[:20]
+        existing_un = await db.users.find_one({"username": username})
         counter += 1
-    
     user_id = str(uuid.uuid4())
-    user_doc = {
-        "id": user_id,
-        "email": data.email,
-        "username": username,
-        "password_hash": hash_password(data.temporary_password),
-        "name": data.name,
-        "role": "admin",
-        "plan": "premium",
-        "credits": 1000,
-        "status": "active",
+    await db.users.insert_one({
+        "id": user_id, "email": data.email, "username": username,
+        "name": data.name, "password_hash": hash_password(data.temporary_password),
+        "role": "admin", "plan": "premium", "credits": 1000,
+        "api_key": None, "api_call_count": 0,
+        "api_call_reset": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.users.insert_one(user_doc)
-    
-    await db.activity_logs.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": current_user.id,
-        "action": "admin_created",
-        "details": f"Created admin account: {data.email}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
     })
-    
-    return {
-        "message": "Admin created successfully",
-        "email": data.email,
-        "temporary_password": data.temporary_password
-    }
+    await create_audit_log("admin_created", current_user.id, user_id, f"Admin created: {data.email}")
+    return {"message": "Admin created", "user_id": user_id, "username": username}
 
-@api_router.delete("/owner/remove-admin/{user_id}")
-async def remove_admin(user_id: str, current_user: User = Depends(get_owner_user)):
-    target_user = await db.users.find_one({"id": user_id})
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if target_user['role'] != 'admin':
-        raise HTTPException(status_code=400, detail="User is not an admin")
-    
-    await db.users.update_one({"id": user_id}, {"$set": {"role": "user", "plan": "free"}})
-    
-    await db.activity_logs.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": current_user.id,
-        "action": "admin_removed",
-        "details": f"Removed admin privileges from: {target_user['email']}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    return {"message": "Admin privileges removed"}
 
 @api_router.get("/owner/admins")
-async def get_all_admins(current_user: User = Depends(get_owner_user)):
-    admins = await db.users.find({"role": "admin"}, {"_id": 0, "password_hash": 0}).to_list(100)
+async def get_admins(current_user: User = Depends(get_owner_user)):
+    admins = await db.users.find({"role": "admin"}, {"_id": 0, "password_hash": 0, "api_key": 0}).to_list(100)
     return admins
 
-@api_router.put("/owner/users/{user_id}/reset-password")
-async def owner_reset_password(user_id: str, data: ResetUserPassword, current_user: User = Depends(get_owner_user)):
-    target_user = await db.users.find_one({"id": user_id})
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    new_hash = hash_password(data.new_password)
-    await db.users.update_one({"id": user_id}, {"$set": {"password_hash": new_hash}})
-    
-    await db.activity_logs.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": current_user.id,
-        "action": "password_reset",
-        "details": f"Reset password for: {target_user['email']}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    await create_notification(user_id, "password_reset", "Your password has been reset by system owner")
-    
-    return {"message": "Password reset successfully"}
-
-@api_router.get("/owner/system-settings")
-async def get_system_settings(current_user: User = Depends(get_owner_user)):
-    settings = await db.system_settings.find_one({"_id": "main"}, {"_id": 0})
-    if not settings:
-        settings = {
-            "maintenance_mode": False,
-            "scan_url_cost_free": 5,
-            "scan_url_cost_premium": 3,
-            "scan_file_cost_free": 10,
-            "scan_file_cost_premium": 6
-        }
-    return settings
-
-@api_router.put("/owner/system-settings")
-async def update_system_settings(data: SystemSettings, current_user: User = Depends(get_owner_user)):
-    await db.system_settings.update_one(
-        {"_id": "main"},
-        {"$set": data.model_dump()},
-        upsert=True
-    )
-    
-    await db.activity_logs.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": current_user.id,
-        "action": "system_settings_updated",
-        "details": "Updated system settings",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-    
-    return {"message": "System settings updated successfully"}
-
-@api_router.get("/owner/revenue")
-async def get_revenue_overview(current_user: User = Depends(get_owner_user)):
-    total_pipeline = [
-        {"$match": {"status": "completed"}},
-        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
-    ]
-    total_result = await db.transactions.aggregate(total_pipeline).to_list(1)
-    total_revenue = total_result[0]['total'] if total_result else 0
-    
-    monthly_pipeline = [
-        {
-            "$match": {
-                "status": "completed",
-                "created_at": {"$gte": datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0).isoformat()}
-            }
-        },
-        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
-    ]
-    monthly_result = await db.transactions.aggregate(monthly_pipeline).to_list(1)
-    monthly_revenue = monthly_result[0]['total'] if monthly_result else 0
-    
-    plan_breakdown = []
-    for plan in ['premium', 'enterprise']:
-        plan_pipeline = [
-            {"$match": {"status": "completed", "plan": plan}},
-            {"$group": {"_id": None, "total": {"$sum": "$amount"}, "count": {"$sum": 1}}}
-        ]
-        plan_result = await db.transactions.aggregate(plan_pipeline).to_list(1)
-        if plan_result:
-            plan_breakdown.append({
-                "plan": plan,
-                "revenue": plan_result[0]['total'],
-                "transactions": plan_result[0]['count']
-            })
-    
-    return {
-        "total_revenue": total_revenue,
-        "monthly_revenue": monthly_revenue,
-        "plan_breakdown": plan_breakdown
-    }
-
-@api_router.get("/owner/activity-logs")
-async def get_all_activity_logs(
-    limit: int = 100,
-    action: Optional[str] = None,
-    current_user: User = Depends(get_owner_user)
-):
-    query = {}
-    if action:
-        query["action"] = action
-    
-    logs = await db.activity_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
-    
-    for log in logs:
-        user = await db.users.find_one({"id": log['user_id']}, {"_id": 0, "email": 1, "name": 1, "role": 1})
-        if user:
-            log['user_info'] = user
-    
-    return logs
-
-@api_router.post("/owner/promote-to-owner/{user_id}")
-async def promote_to_owner(user_id: str, current_user: User = Depends(get_owner_user)):
-    target_user = await db.users.find_one({"id": user_id})
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if target_user['role'] == 'owner':
-        raise HTTPException(status_code=400, detail="User is already an owner")
-    
-    await db.users.update_one(
-        {"id": user_id},
-        {"$set": {"role": "owner", "plan": "enterprise", "credits": 999999}}
-    )
-    
-    await create_audit_log(
-        action_type="owner_promoted",
-        performed_by=current_user.id,
-        target_user=user_id,
-        details=f"Promoted {target_user['email']} to owner"
-    )
-    
-    await create_notification(user_id, "role_change", "You have been promoted to Owner")
-    
-    return {"message": "User promoted to owner successfully"}
-
-@api_router.post("/owner/demote-owner/{user_id}")
-async def demote_owner(user_id: str, current_user: User = Depends(get_owner_user)):
-    target_user = await db.users.find_one({"id": user_id})
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if target_user['role'] != 'owner':
-        raise HTTPException(status_code=400, detail="User is not an owner")
-    
-    if user_id == current_user.id:
-        # Check if this is the last owner
-        owner_count = await db.users.count_documents({"role": "owner"})
-        if owner_count <= 1:
-            raise HTTPException(status_code=400, detail="Cannot remove the last owner")
-    
-    await db.users.update_one(
-        {"id": user_id},
-        {"$set": {"role": "admin", "plan": "premium", "credits": 1000}}
-    )
-    
-    await create_audit_log(
-        action_type="owner_demoted",
-        performed_by=current_user.id,
-        target_user=user_id,
-        details=f"Demoted {target_user['email']} from owner to admin"
-    )
-    
-    await create_notification(user_id, "role_change", "Your owner privileges have been removed")
-    
-    return {"message": "Owner privileges removed"}
-
-@api_router.get("/owner/all-owners")
-async def get_all_owners(current_user: User = Depends(get_owner_user)):
-    owners = await db.users.find({"role": "owner"}, {"_id": 0, "password_hash": 0, "otp_code": 0}).to_list(100)
-    return owners
 
 @api_router.get("/owner/audit-logs")
-async def get_audit_logs(
-    limit: int = 100,
-    action_type: Optional[str] = None,
-    current_user: User = Depends(get_owner_user)
-):
+async def get_audit_logs(limit: int = 100, action_type: Optional[str] = None, current_user: User = Depends(get_owner_user)):
     query = {}
     if action_type:
         query["action_type"] = action_type
-    
     logs = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
-    
     for log in logs:
-        if log.get('performed_by'):
-            user = await db.users.find_one(
-                {"id": log['performed_by']},
-                {"_id": 0, "email": 1, "name": 1, "username": 1, "role": 1}
-            )
-            if user:
-                log['performed_by_info'] = user
-        
-        if log.get('target_user'):
-            target = await db.users.find_one(
-                {"id": log['target_user']},
-                {"_id": 0, "email": 1, "name": 1, "username": 1, "role": 1}
-            )
+        if log.get("performed_by"):
+            performer = await db.users.find_one({"id": log["performed_by"]}, {"_id": 0, "email": 1, "name": 1, "username": 1, "role": 1})
+            if performer:
+                log["performed_by_info"] = performer
+        if log.get("target_user"):
+            target = await db.users.find_one({"id": log["target_user"]}, {"_id": 0, "email": 1, "name": 1, "username": 1, "role": 1})
             if target:
-                log['target_user_info'] = target
-    
+                log["target_user_info"] = target
     return logs
+
+
+# ==================== OWNER: PRICING & SETTINGS ====================
+
+@api_router.get("/owner/site-settings")
+async def get_site_settings(current_user: User = Depends(get_owner_user)):
+    settings = {}
+    cursor = db.site_settings.find({}, {"_id": 0})
+    async for doc in cursor:
+        settings[doc["key"]] = doc["value"]
+    # Set defaults if not exist
+    if "premium_price" not in settings:
+        settings["premium_price"] = "499"
+    if "enterprise_price" not in settings:
+        settings["enterprise_price"] = "2499"
+    return settings
+
+
+@api_router.put("/owner/site-settings/prices")
+async def update_prices(data: PriceUpdate, current_user: User = Depends(get_owner_user)):
+    if data.premium_price < 0 or data.enterprise_price < 0:
+        raise HTTPException(status_code=400, detail="Prices must be non-negative")
+    for key, value in [("premium_price", str(data.premium_price)), ("enterprise_price", str(data.enterprise_price))]:
+        await db.site_settings.update_one(
+            {"key": key},
+            {"$set": {"key": key, "value": value, "updated_by": current_user.id, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+    await create_audit_log("prices_updated", current_user.id, details=f"Premium: {data.premium_price}, Enterprise: {data.enterprise_price}")
+    return {"message": "Prices updated", "premium_price": data.premium_price, "enterprise_price": data.enterprise_price}
+
 
 @api_router.get("/owner/payment-settings")
 async def get_payment_settings(current_user: User = Depends(get_owner_user)):
     settings = await db.payment_settings.find_one({"_id": "razorpay"})
+    default_key_id = os.environ.get("RAZORPAY_KEY_ID", "")
+    default_secret = os.environ.get("RAZORPAY_KEY_SECRET", "")
     if settings:
         return {
             "gateway": "razorpay",
             "key_id": settings.get("key_id", ""),
             "key_secret_masked": mask_key(decrypt_value(settings["key_secret_encrypted"])) if settings.get("key_secret_encrypted") else "",
             "is_active": settings.get("is_active", True),
-            "updated_at": settings.get("updated_at", ""),
-            "updated_by": settings.get("updated_by", "")
+            "updated_at": settings.get("updated_at", "")
         }
     return {
         "gateway": "razorpay",
-        "key_id": DEFAULT_RAZORPAY_KEY_ID,
-        "key_secret_masked": mask_key(DEFAULT_RAZORPAY_KEY_SECRET),
+        "key_id": default_key_id,
+        "key_secret_masked": mask_key(default_secret) if default_secret else "",
         "is_active": True,
-        "updated_at": "",
-        "updated_by": "",
         "is_default": True
     }
 
+
 @api_router.put("/owner/payment-settings")
 async def update_payment_settings(data: PaymentSettingsUpdate, current_user: User = Depends(get_owner_user)):
-    if data.gateway != "razorpay":
-        raise HTTPException(status_code=400, detail="Only Razorpay gateway is currently supported")
-    
     if not data.key_id or not data.key_secret:
-        raise HTTPException(status_code=400, detail="Key ID and Key Secret are required")
-    
-    encrypted_secret = encrypt_value(data.key_secret)
-    
+        raise HTTPException(status_code=400, detail="Key ID and Secret required")
     await db.payment_settings.update_one(
         {"_id": "razorpay"},
         {"$set": {
-            "gateway": "razorpay",
-            "key_id": data.key_id,
-            "key_secret_encrypted": encrypted_secret,
+            "gateway": "razorpay", "key_id": data.key_id,
+            "key_secret_encrypted": encrypt_value(data.key_secret),
             "is_active": data.is_active,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "updated_by": current_user.id
         }},
         upsert=True
     )
-    
-    await create_audit_log(
-        action_type="payment_settings_updated",
-        performed_by=current_user.id,
-        details=f"Payment gateway settings updated (Razorpay Key: {mask_key(data.key_id)})"
-    )
-    
-    return {"message": "Payment gateway settings updated successfully"}
+    await create_audit_log("payment_settings_updated", current_user.id, details=f"Gateway updated: {mask_key(data.key_id)}")
+    return {"message": "Payment settings updated"}
 
-@api_router.post("/owner/payment-settings/test")
-async def test_payment_settings(current_user: User = Depends(get_owner_user)):
-    """Test if the current payment gateway configuration is valid"""
-    gateway_config = await get_payment_gateway_config()
-    try:
-        rz_client = create_razorpay_client(gateway_config["key_id"], gateway_config["key_secret"])
-        # Try a simple API call to validate keys
-        rz_client.order.all({"count": 1})
-        return {"status": "success", "message": "Payment gateway connection successful"}
-    except Exception as e:
-        return {"status": "error", "message": f"Connection failed: {str(e)}"}
+
+# ==================== PLANS & BILLING ====================
+
+@api_router.get("/billing/plans")
+async def get_plans():
+    # Load dynamic pricing
+    premium_price = 499
+    enterprise_price = 2499
+    settings = await db.site_settings.find_one({"key": "premium_price"})
+    if settings:
+        premium_price = int(settings["value"])
+    settings = await db.site_settings.find_one({"key": "enterprise_price"})
+    if settings:
+        enterprise_price = int(settings["value"])
+
+    return [
+        {
+            "name": "free", "price": 0,
+            "features": ["50 credits/month", "URL & File scanning", "Basic risk scoring", "URLhaus + VirusTotal", "Scan history"],
+            "limits": PLAN_CONFIG["free"]
+        },
+        {
+            "name": "premium", "price": premium_price,
+            "features": [
+                "500 credits/month", "Priority queue scanning", "Full scanner suite (VT + urlscan.io + URLhaus + MalwareBazaar)",
+                "IOC extraction & export (CSV/JSON)", "API key access (1000 calls/day)", "PDF scan reports",
+                "Email report scheduling", "Advanced threat intelligence"
+            ],
+            "limits": PLAN_CONFIG["premium"]
+        },
+        {
+            "name": "enterprise", "price": enterprise_price,
+            "features": [
+                "Unlimited credits", "Highest priority scanning", "All Premium features",
+                "API access (10,000 calls/day)", "Team workspace (up to 50 members)",
+                "Webhooks (real-time notifications)", "Custom report scheduling",
+                "Dedicated support"
+            ],
+            "limits": PLAN_CONFIG["enterprise"]
+        }
+    ]
+
+
+@api_router.get("/user/stats")
+async def get_user_stats(user: User = Depends(get_current_user)):
+    total_scans = await db.scans.count_documents({"user_id": user.id})
+    user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 0})
+    plan_config = PLAN_CONFIG.get(user.plan, PLAN_CONFIG["free"])
+    recent_scans = await db.scans.find(
+        {"user_id": user.id}, {"_id": 0, "raw_results": 0}
+    ).sort("created_at", -1).limit(5).to_list(5)
+    return {
+        "total_scans": total_scans, "credits": user_doc.get("credits", 0),
+        "plan": user.plan, "plan_features": plan_config,
+        "recent_scans": recent_scans,
+        "has_api_key": bool(user_doc.get("api_key"))
+    }
+
+
+@api_router.get("/user/notifications")
+async def get_notifications(user: User = Depends(get_current_user)):
+    notifs = await db.notifications.find(
+        {"user_id": user.id}, {"_id": 0}
+    ).sort("created_at", -1).limit(20).to_list(20)
+    return notifs
+
+
+@api_router.put("/user/notifications/{notif_id}/read")
+async def mark_notification_read(notif_id: str, user: User = Depends(get_current_user)):
+    await db.notifications.update_one({"id": notif_id, "user_id": user.id}, {"$set": {"read": True}})
+    return {"message": "Marked as read"}
+
+
+# ==================== SETUP ====================
 
 app.include_router(api_router)
 
@@ -1570,12 +1078,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def startup():
+    # Ensure indexes
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("username", unique=True)
+    await db.users.create_index("api_key", sparse=True)
+    await db.scans.create_index([("user_id", 1), ("created_at", -1)])
+    await db.iocs.create_index("scan_id")
+    await db.webhooks.create_index("user_id")
+    await db.team_members.create_index("team_id")
+    # Seed default site settings
+    existing = await db.site_settings.find_one({"key": "premium_price"})
+    if not existing:
+        await db.site_settings.insert_many([
+            {"key": "premium_price", "value": "499", "updated_at": datetime.now(timezone.utc).isoformat()},
+            {"key": "enterprise_price", "value": "2499", "updated_at": datetime.now(timezone.utc).isoformat()}
+        ])
+    logger.info("Link Shield API started")
+
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def shutdown():
     client.close()
