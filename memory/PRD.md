@@ -78,8 +78,11 @@ Full-stack SaaS cybersecurity scanning platform with URL/file scanning, credits,
 - [x] JWT auth (signup/login) + API key auth
 - [x] Role-based access (user/admin/owner)
 - [x] Plan-gated feature access (free/premium/enterprise)
-- [x] Real URL scanning (VirusTotal + urlscan.io + URLhaus)
-- [x] Real file scanning (VirusTotal + MalwareBazaar)
+- [x] Real URL scanning (VirusTotal + urlscan.io + URLhaus) with graceful fallback when keys missing
+- [x] Real file scanning (VirusTotal + MalwareBazaar + 7 local heuristic scanners: PE, PDF, ZIP, DOC, APK, Image, generic)
+- [x] **Sensitivity slider** (Low/Normal/High/Aggressive) on Scan page — sent with both URL and File scans
+- [x] **Rich ScanResult page**: sensitivity badge, file type detected, engines x/y, explanations list, heuristic findings, cache indicator
+- [x] **24h scan cache** keyed by (url|hash, sensitivity, plan) — re-evaluates on sensitivity change
 - [x] IOC extraction from scan results
 - [x] IOC export (CSV/JSON) for Premium+
 - [x] Redis priority queue for scanning

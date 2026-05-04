@@ -99,7 +99,7 @@ async def store_cache(db, cache_key: str, result: dict):
 
 async def scan_url_full(url: str, sensitivity: str, db, user_plan: str) -> dict:
     """Full URL scan with all engines and scoring"""
-    cache_key = f"url:{hashlib.sha256(url.encode()).hexdigest()}"
+    cache_key = f"url:{sensitivity}:{user_plan}:{hashlib.sha256(url.encode()).hexdigest()}"
     cached = await check_cache(db, cache_key)
     if cached:
         cached["from_cache"] = True
@@ -192,7 +192,7 @@ async def scan_url_full(url: str, sensitivity: str, db, user_plan: str) -> dict:
 async def scan_file_full(file_bytes: bytes, filename: str, sensitivity: str, db, user_plan: str) -> dict:
     """Full file scan with type detection, heuristics, and API queries"""
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    cache_key = f"file:{file_hash}"
+    cache_key = f"file:{sensitivity}:{file_hash}"
     cached = await check_cache(db, cache_key)
     if cached:
         cached["from_cache"] = True
