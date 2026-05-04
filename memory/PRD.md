@@ -1,81 +1,125 @@
 # Link Shield - Product Requirements Document
 
 ## Original Problem Statement
-Build a full-stack SaaS web application called "Link Shield" — a cybersecurity scanning platform where users can scan URLs, files, apps, PDFs, and images, with a full account system, credits, premium plans, and admin panel.
+Full-stack SaaS cybersecurity scanning platform with URL/file scanning, credits, premium/enterprise plans, admin panel, and real security API integrations.
 
 ## Tech Stack
 - **Backend**: FastAPI (Python) on port 8001
 - **Frontend**: React.js on port 3000
-- **Database**: MongoDB (via motor async driver)
-- **UI**: Shadcn/UI + Tailwind CSS, dark cybersecurity theme with green (#00FF94) accent
-- **Auth**: JWT-based with role system (user, admin, owner)
+- **Database**: MongoDB (motor async driver)
+- **Queue**: Redis (priority scanning queue)
+- **PDF**: fpdf2 library
+- **UI**: Shadcn/UI + Tailwind CSS, dark cybersecurity theme, green (#00FF94) accent
+- **Auth**: JWT + API Key (dual auth)
 
 ## Architecture
 ```
-/app/
-├── backend/
-│   ├── server.py          # All API endpoints
-│   ├── .env               # MONGO_URL, DB_NAME, RAZORPAY keys
-│   └── requirements.txt
-└── frontend/
-    ├── src/
-    │   ├── context/AuthContext.js   # Auth state management
-    │   ├── pages/                   # All page components
-    │   ├── components/ui/           # Shadcn components
-    │   └── App.js                   # Routes
-    └── .env                         # REACT_APP_BACKEND_URL
+/app/backend/
+├── server.py              # All API endpoints (plan-gated, role-based)
+├── services/
+│   ├── __init__.py        # Real scanning (VT, urlscan, URLhaus, MalwareBazaar) + IOC extraction
+│   ├── queue.py           # Redis priority queue
+│   ├── reports.py         # PDF generation + email delivery
+│   └── webhooks.py        # Webhook delivery service
+├── .env                   # All config (MONGO_URL, REDIS_URL, VT_API_KEY, etc.)
+└── requirements.txt
+
+/app/frontend/src/
+├── pages/
+│   ├── Dashboard.js       # Quick Actions (plan-gated), stats, recent scans
+│   ├── Scan.js            # URL + file scanning
+│   ├── ScanResult.js      # Risk score, threats, IOC table, PDF/CSV export
+│   ├── History.js         # Scan history
+│   ├── Plans.js           # Dynamic pricing from DB
+│   ├── ApiKeys.js         # API key management (Premium+)
+│   ├── Reports.js         # PDF download + email schedule (Premium+)
+│   ├── Teams.js           # Team workspace (Enterprise)
+│   ├── Webhooks.js        # Webhook management (Enterprise)
+│   ├── AdminDashboard.js  # User mgmt + plan change (Admin/Owner)
+│   └── OwnerControls.js   # Pricing, Payment Gateway, Create Admin, Audit Logs
+├── context/AuthContext.js
+└── App.js                 # All routes
 ```
 
 ## DB Collections
-- **users**: {id, email, username, password_hash, name, role, plan, credits, status, created_at}
-- **scans**: {id, user_id, scan_type, target, status, risk_score, risk_level, metadata, iocs, summary, created_at}
-- **transactions**: {id, user_id, plan, amount, status, order_id, payment_id, created_at}
+- **users**: {id, email, username, password_hash, name, role, plan, credits, api_key, api_call_count, api_call_reset, created_at}
+- **scans**: {id, user_id, scan_type, target, status, risk_score, risk_level, threats, raw_results, created_at}
+- **iocs**: {scan_id, ioc_type, value, confidence, created_at}
+- **teams**: {id, name, owner_id, created_at}
+- **team_members**: {id, team_id, user_id, role}
+- **webhooks**: {id, user_id, url, events, secret, enabled, created_at}
+- **webhook_deliveries**: {webhook_id, event_type, payload, response_status, success, created_at}
+- **report_schedules**: {id, user_id, frequency, format, last_sent, next_send, enabled}
+- **site_settings**: {key, value, updated_by, updated_at}
+- **payment_settings**: {_id: "razorpay", key_id, key_secret_encrypted, is_active, updated_at}
 - **audit_logs**: {id, action_type, performed_by, target_user, details, timestamp}
-- **payment_settings**: {_id: "razorpay", gateway, key_id, key_secret_encrypted, is_active, updated_at, updated_by}
-- **credit_history**: {id, user_id, amount, reason, scan_id, admin_id, timestamp}
 - **notifications**: {id, user_id, type, message, read, created_at}
+- **credit_history**: {user_id, amount, reason, admin_id, timestamp}
 
-## Key API Endpoints
-- `/api/auth/{signup, login, me}`
-- `/api/scan/{url, file, {scan_id}, history/list}`
-- `/api/admin/users/{user_id}/{plan, role, status, add-credits, deduct-credits, reset-credits}`
-- `/api/owner/{create-admin, payment-settings, payment-settings/test, audit-logs}`
-- `/api/billing/{plans, create-order, verify-payment, webhook}`
+## Plan Features
+| Feature | Free | Premium | Enterprise |
+|---------|------|---------|------------|
+| Credits/month | 50 | 500 | Unlimited |
+| Scan priority | Normal (3) | High (2) | Highest (1) |
+| Scanners | URLhaus + VT | + urlscan.io | + All |
+| IOC Export | No | CSV/JSON | CSV/JSON |
+| API Access | No | 1000/day | 10,000/day |
+| PDF Reports | No | Yes | Yes |
+| Email Reports | No | Yes | Yes |
+| Teams | No | No | Up to 50 |
+| Webhooks | No | No | Up to 10 |
 
 ## Test Credentials
 - **Owner**: athulkrishna456727@gmail.com / #AThr401012#
 - **Admin**: athulmark401012@gmail.com / dgskgsnskz
+- **API Key**: ls_4263f7e699fae9e67ff7656deb491fd3467dec81685e13bbe77b4d621b69c358
 
-## What's Been Implemented
-- [x] Full auth system (signup/login with JWT, no OTP)
+## What's Been Implemented (All features have REAL working code)
+- [x] JWT auth (signup/login) + API key auth
 - [x] Role-based access (user/admin/owner)
-- [x] User dashboard with Quick Scan, stats, recent scans
-- [x] URL/File scanning with simulated risk analysis
-- [x] Scan result detail pages with metadata + IOCs
-- [x] Scan history with search and truncation
-- [x] Credit system (deduction on scan, history tracking)
-- [x] Plans page (Free/Premium/Enterprise) with pricing
-- [x] Admin dashboard (Overview, Users, Scans, Analytics, Owner tabs)
-- [x] **Owner Plan Management** — promote/demote user plans from Admin > Users tab with confirmation dialog, auto-credit update, audit logging
-- [x] **Payment Settings** — Owner Controls > Payment Settings tab for dynamic Razorpay key management (encrypted storage, test connection, no restart needed)
-- [x] Owner Controls (Create Admin, Payment Settings, Audit Logs, System Info + Quick Actions)
-- [x] Modular payment gateway architecture (Razorpay active, Stripe/PayPal slots ready)
-- [x] Account settings (change email/password/username)
-- [x] Notifications system
+- [x] Plan-gated feature access (free/premium/enterprise)
+- [x] Real URL scanning (VirusTotal + urlscan.io + URLhaus)
+- [x] Real file scanning (VirusTotal + MalwareBazaar)
+- [x] IOC extraction from scan results
+- [x] IOC export (CSV/JSON) for Premium+
+- [x] Redis priority queue for scanning
+- [x] API key system with rate limiting
+- [x] PDF scan reports (per-scan + summary)
+- [x] Email report scheduling (daily/weekly/monthly)
+- [x] Teams workspace (Enterprise, up to 50 members)
+- [x] Webhooks (Enterprise, up to 10 endpoints)
+- [x] Webhook test ping + delivery history
+- [x] Owner dynamic price control (no code changes needed)
+- [x] Owner payment gateway settings (encrypted storage)
+- [x] Admin user plan management with confirmation dialog
 - [x] Audit logging for all sensitive actions
-- [x] Text overflow fix for long URLs/filenames
-- [x] OTP system removed (direct signup/login)
+- [x] Credit system with plan-based deduction
+- [x] Scan history with truncation
 
-## MOCKED Features
-- **Scanning engine**: Simulated risk analysis (not real security scanning)
-- **Razorpay**: Demo keys in .env — create-order fails without real keys. Owner can update via Payment Settings.
+## Environment Variables Needed
+```
+MONGO_URL=mongodb://localhost:27017
+DB_NAME=test_database
+REDIS_URL=redis://localhost:6379
+JWT_SECRET=<strong-secret>
+VT_API_KEY=<your-virustotal-key>
+URLSCAN_API_KEY=<your-urlscan-key>
+SMTP_HOST=<smtp-host>
+SMTP_PORT=587
+SMTP_USER=<email>
+SMTP_PASSWORD=<password>
+SMTP_FROM=noreply@linkshield.io
+RAZORPAY_KEY_ID=<fallback-key>
+RAZORPAY_KEY_SECRET=<fallback-secret>
+```
 
 ## Backlog / Future Tasks
-- [ ] Complete Razorpay integration with real API keys (owner can set via UI)
+- [ ] Provide real VirusTotal API key for full scanning
+- [ ] Provide real urlscan.io API key for enhanced analysis
+- [ ] Configure SMTP for email report delivery
+- [ ] Complete Razorpay payment flow with real keys
 - [ ] Add Stripe gateway support
 - [ ] Add PayPal gateway support
-- [ ] Production hardening (JWT secret rotation, rate limiting, security headers)
-- [ ] Real scanning engine integration
-- [ ] Email notifications (SendGrid/SES)
-- [ ] PDF report export for scans
-- [ ] Team workspace for Enterprise plan
+- [ ] Background scan worker (currently synchronous)
+- [ ] Rate limiting middleware for all endpoints
+- [ ] User password reset flow
