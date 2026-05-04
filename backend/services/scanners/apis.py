@@ -4,11 +4,23 @@ import hashlib
 import httpx
 import asyncio
 import logging
+from pathlib import Path
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-VT_API_KEY = os.environ.get("VT_API_KEY", "")
-URLSCAN_API_KEY = os.environ.get("URLSCAN_API_KEY", "")
+# Ensure .env is loaded even if this module is imported before server.py finishes init
+load_dotenv(Path(__file__).resolve().parent.parent.parent / '.env')
+
+
+def _vt_key() -> str:
+    return os.environ.get("VT_API_KEY", "")
+
+
+def _urlscan_key() -> str:
+    return os.environ.get("URLSCAN_API_KEY", "")
+
+
 VT_BASE = "https://www.virustotal.com/api/v3"
 URLSCAN_BASE = "https://urlscan.io/api/v1"
 URLHAUS_BASE = "https://urlhaus-api.abuse.ch/v1"
@@ -17,6 +29,7 @@ MALWAREBAZAAR_BASE = "https://mb-api.abuse.ch/api/v1"
 
 async def vt_scan_url(url: str) -> dict:
     """Submit URL to VirusTotal and retrieve analysis"""
+    VT_API_KEY = _vt_key()
     if not VT_API_KEY:
         return {"source": "virustotal", "error": "VT_API_KEY not configured"}
     try:
@@ -53,6 +66,7 @@ async def vt_scan_url(url: str) -> dict:
 
 async def vt_scan_file(file_bytes: bytes, filename: str) -> dict:
     """Upload file to VirusTotal or do hash lookup"""
+    VT_API_KEY = _vt_key()
     if not VT_API_KEY:
         return {"source": "virustotal", "error": "VT_API_KEY not configured"}
     file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -100,6 +114,7 @@ async def vt_scan_file(file_bytes: bytes, filename: str) -> dict:
 
 async def urlscan_scan(url: str) -> dict:
     """Submit URL to urlscan.io"""
+    URLSCAN_API_KEY = _urlscan_key()
     if not URLSCAN_API_KEY:
         return {"source": "urlscan", "error": "URLSCAN_API_KEY not configured"}
     try:
