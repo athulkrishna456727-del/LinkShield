@@ -24,6 +24,7 @@ from services.scanners import scan_url_full, scan_file_full, extract_url_iocs, e
 from services.queue import enqueue_scan, dequeue_scan, update_scan_status, get_queue_position, get_queue_stats
 from services.reports import generate_scan_pdf, generate_summary_pdf, send_report_email
 from services.webhooks import trigger_webhooks
+from routes.enterprise import _build_routes as _build_enterprise_routes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1066,6 +1067,11 @@ async def mark_notification_read(notif_id: str, user: User = Depends(get_current
 # ==================== SETUP ====================
 
 app.include_router(api_router)
+
+# Enterprise + Network Scanner routes
+_enterprise_router, _owner_verif_router = _build_enterprise_routes(db, get_current_user, get_owner_user, fernet)
+app.include_router(_enterprise_router)
+app.include_router(_owner_verif_router)
 
 app.add_middleware(
     CORSMiddleware,

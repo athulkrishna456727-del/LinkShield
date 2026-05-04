@@ -1,0 +1,56 @@
+# Network Scanner Docker Setup (Production)
+#
+# In this Kubernetes preview environment we run the scanner as a subprocess
+# of the FastAPI backend (nmap, smbclient, ssh-audit are installed in the pod).
+# For production deployments, you may want an isolated scanner container that
+# can be scaled independently and locked down with seccomp/network policies.
+#
+# This file provides a reference setup. Bring it into your prod compose
+# project, set image registry, and have the backend POST scan jobs onto a
+# Redis queue that the scanner container consumes.
+#
+# Usage: docker compose -f docker-compose.scanner.yml up -d
+
+services:
+  scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile.scanner
+    image: linkshield/network-scanner:latest
+    cap_add:
+      # Required for nmap raw-socket scans on some hosts. Drop if -sT only.
+      - NET_RAW
+      - NET_ADMIN
+    networks:
+      - scan_net
+    environment:
+      - MONGO_URL=${MONGO_URL}
+      - DB_NAME=${DB_NAME}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - scan_net
+
+networks:
+  scan_net:
+    driver: bridge
+
+# ---------- Dockerfile.scanner ----------
+# FROM python:3.11-slim
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#       nmap smbclient curl ca-certificates \
+#  && rm -rf /var/lib/apt/lists/*
+# RUN pip install --no-cache-dir ssh-audit fastapi motor httpx pypdf python-dotenv
+# COPY ./services /app/services
+# WORKDIR /app
+# CMD ["python", "-m", "services.scanner_worker"]

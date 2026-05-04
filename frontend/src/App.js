@@ -20,6 +20,10 @@ import ApiKeys from './pages/ApiKeys';
 import Teams from './pages/Teams';
 import Webhooks from './pages/Webhooks';
 import Reports from './pages/Reports';
+import EnterpriseVerification from './pages/EnterpriseVerification';
+import OwnerVerification from './pages/OwnerVerification';
+import NetworkScanner from './pages/NetworkScanner';
+import NetworkScanResult from './pages/NetworkScanResult';
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -55,6 +59,10 @@ function App() {
           <Route path="/teams" element={<PrivateRoute><Teams /></PrivateRoute>} />
           <Route path="/webhooks" element={<PrivateRoute><Webhooks /></PrivateRoute>} />
           <Route path="/reports" element={<PrivateRoute><Reports /></PrivateRoute>} />
+          <Route path="/enterprise/verification" element={<PrivateRoute><EnterpriseVerification /></PrivateRoute>} />
+          <Route path="/enterprise/network-scanner" element={<PrivateRoute><NetworkScanner /></PrivateRoute>} />
+          <Route path="/enterprise/network-scan/:scanId" element={<PrivateRoute><NetworkScanResult /></PrivateRoute>} />
+          <Route path="/owner/verification" element={<PrivateRoute><OwnerVerification /></PrivateRoute>} />
         </Routes>
         <Toaster position="top-right" />
       </BrowserRouter>

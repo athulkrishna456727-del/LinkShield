@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Shield, LogOut, User, LayoutDashboard, FileSearch, History, CreditCard, Settings, Crown } from 'lucide-react';
+import { Shield, LogOut, User, LayoutDashboard, FileSearch, History, CreditCard, Settings, Crown, Network } from 'lucide-react';
 import { Button } from './ui/button';
 
 const Layout = ({ children }) => {
@@ -58,6 +58,18 @@ const Layout = ({ children }) => {
                   <History className="h-5 w-5" />
                   <span>History</span>
                 </Link>
+                {(user.plan === 'enterprise' || user.role === 'owner' || user.role === 'admin') && (
+                  <Link
+                    to="/enterprise/network-scanner"
+                    className={`flex items-center space-x-2 px-3 py-2 rounded-md transition-colors ${
+                      location.pathname.startsWith('/enterprise/network') ? 'bg-accent text-primary' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                    data-testid="nav-network-scanner"
+                  >
+                    <Network className="h-5 w-5" />
+                    <span>Network</span>
+                  </Link>
+                )}
 
                 <div className="flex items-center space-x-4 ml-4 pl-4 border-l border-border">
                   <div className="flex items-center space-x-2 px-3 py-1 bg-card border border-border rounded-lg">

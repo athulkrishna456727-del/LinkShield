@@ -134,6 +134,9 @@ const OwnerControls = () => {
             <Crown className="h-10 w-10 text-primary mr-3" /> Owner Controls
           </h1>
           <p className="text-muted-foreground">Full system control and administrative functions</p>
+          <Button onClick={() => navigate('/owner/verification')} variant="outline" className="mt-4" data-testid="goto-verification-queue">
+            Enterprise Verification Queue →
+          </Button>
         </div>
 
         <Tabs defaultValue="pricing" className="w-full">

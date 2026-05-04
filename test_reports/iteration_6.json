@@ -1,0 +1,40 @@
+{
+  "summary": "E2E tested Enterprise Network Defense Scanner feature end-to-end. Backend: 18/18 pytest tests pass covering the full verification lifecycle (submit -> pending_docs -> pending_company auto-transition in ~3s -> company-approve link -> pending_owner -> owner approve -> approved with 30d expiry and has_network_scan_permission=true -> revoke), owner list/detail/file-serve endpoints, network scanner (owner bypasses verification), real nmap scan of 127.0.0.1 completes in ~25s with hosts_total>=1 and graph.nodes>=1, JSON & PDF export, 403 gating for unverified user, regression on /api/scan/url and /api/scans/history. Frontend: Owner sees 'Network' nav link, /enterprise/network-scanner launches scan and navigates to result page, result page renders vis-network graph with node + 4 summary cards + PNG/PDF/JSON export (JSON download confirmed), /owner/verification lists requests and detail panel renders file View links + status badge (approve/reject/revoke buttons correctly conditional on status), /enterprise/verification submission form renders with all inputs. One minor React warning identified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "EnterpriseVerification.js line 191 (submitted_email Input)", "issue": "Input has both `value={form.submitted_email}` AND `defaultValue={user?.email}` props. React logs: 'contains an input of type with both value and defaultValue props. Input elements must be either controlled or uncontrolled'. Fix: drop defaultValue and instead initialize form state with user?.email in a useEffect so the field stays controlled.", "selector": "[data-testid=\"submitted-email-input\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Network Scan Result - Lateral Movement Graph", "issues": ["Canvas2D console warning from vis-network: 'Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true.' Non-blocking; can be suppressed by setting { willReadFrequently: true } on the canvas context in vis-network config if you own the canvas wrapper, otherwise ignore."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_enterprise_network.py",
+    "/app/test_reports/pytest/pytest_iter6.xml"
+  ],
+  "action_items": [
+    "(Optional, LOW) Remove `defaultValue={user?.email}` from the submitted_email Input in /app/frontend/src/pages/EnterpriseVerification.js (line 191) — either drop it (field already has value) or set form.submitted_email to user.email in a useEffect."
+  ],
+  "critical_code_review_comments": [
+    "routes/enterprise.py _run_verification_pipeline: auto-transitions pending_docs -> pending_company even if face_match_passed is false. Consider branching to 'pending_owner_face_fail' or annotating warning for owner, so owner has explicit signal when face match < 0.75. Currently only the numeric face_match_score is surfaced.",
+    "routes/enterprise.py submit_verification: if any of the 3 files fails _safe_ext, the first saved file(s) are not cleaned up. Low risk (10MB cap) but consider wrapping all 3 _save_upload in a try/except that cleans partial writes.",
+    "OwnerVerification.js: action buttons are correctly conditional by status (pending_* => Approve/Reject; approved => Revoke) but there is NO affordance for 'rejected' or 'expired' records beyond read-only view. Consider adding a 'Re-open' or 'Clear history' action, or at least a muted status explainer badge.",
+    "network_scanner.py is real subprocess; verified nmap output is parsed correctly for 127.0.0.1. The service has no explicit timeout per host — a large CIDR will block the background task for minutes. Consider a max-scan-duration or chunked host scanning.",
+    "Backend /api/enterprise/start-scan rate-limit: 'max 1 active scan per user' uses a Mongo read-then-insert pattern that has a race window. For production, consider an upsert with a unique partial index on {user_id, status:{queued|running}} or a user-level mutex."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_enterprise_network.py (new)"
+  ],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "95% (1 minor React warning)"},
+  "test_credentials": "Owner athulkrishna456727@gmail.com / #AThr401012# (enterprise) and Admin athulmark401012@gmail.com / dgskgsnskz (premium). Admin was used as the unverified user in the verification-flow tests; revoke step at end returns admin back to unverified state for future runs.",
+  "seed_data_creation": "Created 1 verification record (TEST_AcmeCorp / acme.example.com) for admin user, walked it through submit -> pending_company -> pending_owner -> approved -> revoked (final status=expired). Created 2 network scan records for owner (127.0.0.1, both completed with hosts_total=1). Upload files saved to /app/backend/uploads/verification/.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test file /app/backend/tests/test_enterprise_network.py is idempotent — it creates a TEST_AcmeCorp verification for admin, walks the entire state machine, and revokes at the end. If re-run without cleanup of the expired record, the owner queue will accumulate EXPIRED entries (visible in /owner/verification). The admin account should end each run in a non-approved state. Owner scans are kept (no cleanup). For manually testing the full free-user flow, create a fresh signup rather than reuse admin, because the submit endpoint rejects if an active approved verification exists. Vis-network graph and BFS dot animation work — clicking a node triggers requestAnimationFrame animation (visually validated earlier by agent, not in playwright here since localhost graph has 0 edges).",
+  "rca of the issue": "N/A — no blocking issues. The React value+defaultValue warning is cosmetic."
+}
